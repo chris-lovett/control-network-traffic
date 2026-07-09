@@ -1,0 +1,45 @@
+# proxy-defaults.yaml
+#
+# Consul ProxyDefaults (global) – applies to ALL Envoy sidecars in the mesh.
+#
+# Key settings for the demo scenarios:
+#   - MeshGateway: controls how cross-datacenter traffic is handled.
+#   - Config.protocol: set to "http" so L7 features (routing, splitting) work.
+#
+# Apply with:
+#   consul config write consul/config-entries/proxy-defaults.yaml
+#
+# Reference: https://developer.hashicorp.com/consul/docs/connect/config-entries/proxy-defaults
+
+Kind: "proxy-defaults"
+Name: "global"
+Config:
+  # Setting the protocol to HTTP enables L7 traffic management features:
+  # service splitters, routers, and circuit-breaking via outlier detection.
+  protocol: "http"
+MeshGateway:
+  Mode: "none"   # Change to "local" or "remote" for multi-DC setups
+
+# ---------------------------------------------------------------------------
+# Circuit Breaking – configured via ServiceDefaults per-service (see below).
+# ---------------------------------------------------------------------------
+# There is no single "circuit breaker" config entry in Consul; instead,
+# outlier detection is configured on the upstream proxy via ServiceDefaults
+# or on individual service intentions.
+#
+# Example ServiceDefaults for the "backend" service with outlier detection:
+#
+# Kind: "service-defaults"
+# Name: "backend"
+# Protocol: "http"
+# UpstreamConfig:
+#   Defaults:
+#     PassiveHealthCheck:
+#       Interval: "10s"
+#       MaxFailures: 3
+#       EnforcingConsecutive5xx: 100   # eject after 3 consecutive 5xx
+#       MaxEjectionPercent: 100        # allow ejecting all hosts
+#       BaseEjectionTime: "30s"
+#
+# Apply the above with:
+#   consul config write consul/config-entries/service-defaults-backend.yaml

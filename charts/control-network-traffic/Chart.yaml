@@ -1,0 +1,17 @@
+apiVersion: v2
+name: control-network-traffic
+description: |
+  A Helm chart that deploys the control-network-traffic demo application
+  (frontend → api → backend) for demonstrating Consul Enterprise traffic
+  control patterns on OpenShift: blue/green, canary, circuit breaking, and chaos.
+type: application
+version: 0.1.0
+appVersion: "v1"
+keywords:
+  - consul
+  - service-mesh
+  - openshift
+  - blue-green
+  - canary
+  - circuit-breaking
+home: https://github.com/chris-lovett/control-network-traffic
