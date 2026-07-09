@@ -1,0 +1,29 @@
+# service-splitter.yaml
+#
+# Consul ServiceSplitter for the "backend" service.
+#
+# Use this config entry to implement CANARY deployments by gradually shifting
+# traffic from v1 to v2.  Adjust the weights to move traffic incrementally:
+#
+#   Stage 1 – baseline (100% v1):  v1=100, v2=0
+#   Stage 2 – canary start:        v1=90,  v2=10
+#   Stage 3 – canary expand:       v1=50,  v2=50
+#   Stage 4 – full cut-over:       v1=0,   v2=100
+#
+# Apply with:
+#   consul config write consul/config-entries/service-splitter.yaml
+#
+# Reference: https://developer.hashicorp.com/consul/docs/connect/config-entries/service-splitter
+
+Kind: "service-splitter"
+Name: "backend"
+Splits:
+  # --- Baseline: all traffic to v1 ---
+  - Weight: 100
+    ServiceSubset: "v1"
+  # --- Canary: uncomment and adjust to shift traffic to v2 ---
+  # - Weight: 10
+  #   ServiceSubset: "v2"
+
+# NOTE: Weights across all splits MUST sum to exactly 100.
+# The ServiceResolver (service-resolver.yaml) must be applied before this entry.

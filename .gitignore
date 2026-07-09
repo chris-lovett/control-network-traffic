@@ -1,0 +1,17 @@
+# Go build artifacts
+services/backend/backend
+services/api/api
+services/frontend/frontend
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# Helm dependencies (not used here, but good hygiene)
+charts/*/charts/
+charts/*/Chart.lock

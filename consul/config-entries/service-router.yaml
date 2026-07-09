@@ -1,0 +1,38 @@
+# service-router.yaml
+#
+# Consul ServiceRouter for the "backend" service.
+#
+# Use this config entry for BLUE/GREEN deployments.  It routes ALL traffic to
+# a specific subset based on a header, or permanently directs to v1 or v2.
+#
+# Example – route all traffic to v2 (green):
+#   Uncomment the "Destination v2" section and comment out v1.
+#
+# Apply with:
+#   consul config write consul/config-entries/service-router.yaml
+#
+# Reference: https://developer.hashicorp.com/consul/docs/connect/config-entries/service-router
+
+Kind: "service-router"
+Name: "backend"
+Routes:
+  # --- Header-based routing: send requests with X-Backend-Version: v2 to v2 ---
+  # Useful for smoke-testing the new (green) version before cutting over.
+  - Match:
+      HTTP:
+        Header:
+          - Name: "X-Backend-Version"
+            Exact: "v2"
+    Destination:
+      Service: "backend"
+      ServiceSubset: "v2"
+
+  # --- Default route: all other traffic goes to v1 (blue) ---
+  # To cut over to v2, change ServiceSubset to "v2" (or delete this route and
+  # update the DefaultSubset in service-resolver.yaml).
+  - Match:
+      HTTP:
+        PathPrefix: "/"
+    Destination:
+      Service: "backend"
+      ServiceSubset: "v1"

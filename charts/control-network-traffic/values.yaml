@@ -1,0 +1,120 @@
+# Default values for the control-network-traffic demo application.
+# Override per-environment or per-demo scenario as needed.
+
+# -- Global image pull policy. Use Always for demo environments.
+imagePullPolicy: IfNotPresent
+
+# -- Optional image pull secrets (e.g. for private registries).
+imagePullSecrets: []
+
+# -- Namespace is set by `helm install --namespace`. No override needed here.
+
+# ---------------------------------------------------------------------------
+# Frontend service
+# ---------------------------------------------------------------------------
+frontend:
+  replicaCount: 1
+  image:
+    repository: ghcr.io/chris-lovett/control-network-traffic/frontend
+    tag: "v1"
+  appVersion: "v1"
+  port: 8080
+  # URL the frontend uses to reach the api service (Consul service name).
+  apiURL: "http://api:8080"
+  resources:
+    requests:
+      cpu: "50m"
+      memory: "64Mi"
+    limits:
+      cpu: "200m"
+      memory: "128Mi"
+  # OpenShift: run as a non-root UID
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 1001
+    allowPrivilegeEscalation: false
+
+# ---------------------------------------------------------------------------
+# API service
+# ---------------------------------------------------------------------------
+api:
+  replicaCount: 1
+  image:
+    repository: ghcr.io/chris-lovett/control-network-traffic/api
+    tag: "v1"
+  appVersion: "v1"
+  port: 8080
+  # URL the api uses to reach the backend service (Consul service name).
+  backendURL: "http://backend:8080"
+  resources:
+    requests:
+      cpu: "50m"
+      memory: "64Mi"
+    limits:
+      cpu: "200m"
+      memory: "128Mi"
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 1001
+    allowPrivilegeEscalation: false
+
+# ---------------------------------------------------------------------------
+# Backend service – v1 (primary / "blue")
+# ---------------------------------------------------------------------------
+backend:
+  replicaCount: 1
+  image:
+    repository: ghcr.io/chris-lovett/control-network-traffic/backend
+    tag: "v1"
+  appVersion: "v1"
+  port: 8080
+  # Chaos toggles (0 = disabled)
+  failureRate: "0"   # 0.0–1.0 probability of returning HTTP 500
+  delayMs: "0"       # artificial response delay in milliseconds
+  resources:
+    requests:
+      cpu: "50m"
+      memory: "64Mi"
+    limits:
+      cpu: "200m"
+      memory: "128Mi"
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 1001
+    allowPrivilegeEscalation: false
+
+# ---------------------------------------------------------------------------
+# Backend v2 – optional second deployment for blue/green and canary demos.
+# Set enabled: true and adjust image.tag to deploy the "green" variant.
+# ---------------------------------------------------------------------------
+backendV2:
+  enabled: false
+  replicaCount: 1
+  image:
+    repository: ghcr.io/chris-lovett/control-network-traffic/backend
+    tag: "v2"
+  appVersion: "v2"
+  port: 8080
+  failureRate: "0"
+  delayMs: "0"
+  resources:
+    requests:
+      cpu: "50m"
+      memory: "64Mi"
+    limits:
+      cpu: "200m"
+      memory: "128Mi"
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 1001
+    allowPrivilegeEscalation: false
+
+# ---------------------------------------------------------------------------
+# OpenShift Route (optional – exposes frontend externally via OpenShift router)
+# ---------------------------------------------------------------------------
+route:
+  enabled: false
+  host: ""          # leave blank for auto-generated hostname
+  tls:
+    enabled: false
+    termination: edge
