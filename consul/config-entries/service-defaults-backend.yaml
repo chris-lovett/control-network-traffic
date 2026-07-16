@@ -3,30 +3,27 @@
 # Consul ServiceDefaults for the "backend" service.
 #
 # Enables HTTP protocol (required for L7 traffic management) and configures
-# CIRCUIT BREAKING via Envoy's outlier detection / passive health checking.
+# circuit breaking via Envoy's passive health checking (outlier detection).
 #
 # Apply with:
 #   consul config write consul/config-entries/service-defaults-backend.yaml
-#
-# Reference:
-#   developer.hashicorp.com/consul/docs/connect/config-entries/service-defaults
-#   developer.hashicorp.com/consul/tutorials/control-network-traffic/service-mesh-circuit-breaking
 
-Kind: "service-defaults"
-Name: "backend"
-Protocol: "http"
+Kind     = "service-defaults"
+Name     = "backend"
+Protocol = "http"
 
-# Upstream config applies to any service that talks TO "backend".
-# Here we configure passive health checking (outlier detection) on backend's
-# upstream proxy so that unhealthy backend instances are temporarily ejected.
-UpstreamConfig:
-  Defaults:
-    PassiveHealthCheck:
+UpstreamConfig {
+  Defaults {
+    PassiveHealthCheck {
       # How often Envoy evaluates passive health check results.
-      Interval: "10s"
-      # Number of consecutive 5xx responses before an instance is ejected.
-      MaxFailures: 3
-      # Percentage of hosts that can be ejected at any time (100 = all).
-      MaxEjectionPercent: 100
+      Interval = "10s"
+      # Consecutive 5xx responses before an instance is ejected.
+      MaxFailures = 3
+      # Percentage of hosts that can be ejected at once.
+      MaxEjectionPercent = 100
       # Base time an ejected host stays out of the pool (doubles on repeat failures).
-      BaseEjectionTime: "30s"
+      BaseEjectionTime = "30s"
+    }
+  }
+}
+

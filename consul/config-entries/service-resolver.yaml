@@ -2,27 +2,25 @@
 #
 # Consul ServiceResolver for the "backend" service.
 #
-# This config entry defines two subsets based on the `version` pod label:
-#   - v1  → selects pods with label version=v1  (current / "blue")
-#   - v2  → selects pods with label version=v2  (new / "green")
+# Defines two subsets based on the `version` pod label:
+#   - v1  -> selects pods with label version=v1  (current / "blue")
+#   - v2  -> selects pods with label version=v2  (new / "green")
 #
 # The default subset routes to v1 until you explicitly switch traffic.
 #
 # Apply with:
 #   consul config write consul/config-entries/service-resolver.yaml
-# or via the OpenShift / k8s CRD (if consul-k8s is installed):
-#   kubectl apply -f consul/config-entries/service-resolver.yaml
-#
-# Reference: developer.hashicorp.com/consul/docs/connect/config-entries/service-resolver
 
-Kind: "service-resolver"
-Name: "backend"
-# DefaultSubset is the subset used when no splitter or router targets a specific subset.
-DefaultSubset: "v1"
-Subsets:
-  v1:
-    # Filter uses Consul health check metadata and service tags.
-    # With consul-k8s the `version` pod label is synced as a service tag.
-    Filter: "Service.Meta.version == v1"
-  v2:
-    Filter: "Service.Meta.version == v2"
+Kind          = "service-resolver"
+Name          = "backend"
+DefaultSubset = "v1"
+
+Subsets {
+  v1 {
+    Filter = "Service.Meta.version == v1"
+  }
+  v2 {
+    Filter = "Service.Meta.version == v2"
+  }
+}
+
