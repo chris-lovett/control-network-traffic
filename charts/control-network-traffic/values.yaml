@@ -44,8 +44,8 @@ api:
     tag: "v1"
   appVersion: "v1"
   port: 8080
-  # URL the api uses to reach the backend service (Consul service name).
-  backendURL: "http://backend:8080"
+  # URL the api uses to reach the backend service via the local Envoy upstream proxy.
+  backendURL: "http://127.0.0.1:8081"
   resources:
     requests:
       cpu: "50m"
