@@ -1,7 +1,5 @@
 # Demo 04: Chaos Engineering
 
-> **Status:** Scaffolded – steps planned, ready for walkthrough.
-
 Chaos engineering deliberately injects failures and latency to verify that the
 system (and Consul service mesh) behaves gracefully under adverse conditions.
 
@@ -14,57 +12,84 @@ The `backend` service has built-in chaos toggles controlled by environment varia
 
 ---
 
-## Planned Scenarios
+## Prerequisites
 
-### Scenario A – Random failures (circuit breaker trigger)
+- Baseline app deployed (see repo [README](../../README.md))
+- Frontend port-forwarded: `oc port-forward deployment/frontend 8080:8080 -n control-network-traffic &`
 
-Combine with Demo 03 to observe circuit breaking in action:
+---
+
+## Scenario A — Random failures
+
+Inject a 50% failure rate and observe errors propagating through the mesh:
 
 ```bash
 helm upgrade cnt ./charts/control-network-traffic \
   --namespace control-network-traffic \
   --reuse-values \
   --set backend.failureRate=0.5
+
+oc rollout status deployment/backend -n control-network-traffic
 ```
 
-Expected behaviour: ~50% of requests fail; circuit breaker trips after threshold.
-
-### Scenario B – Latency injection (timeout / retry testing)
+Verify:
 
 ```bash
-helm upgrade cnt ./charts/control-network-traffic \
-  --namespace control-network-traffic \
-  --reuse-values \
-  --set backend.delayMs=3000
+for i in $(seq 1 10); do
+  curl -s http://localhost:8080/ | jq -r 'if .api.backend then "ok: \(.api.backend.version)" else "FAIL" end'
+done
+# Expected: ~50% ok, ~50% FAIL
 ```
-
-Expected: responses take ≥3 seconds; observe timeout behaviour in api/frontend.
-
-### Scenario C – Total backend failure
-
-```bash
-helm upgrade cnt ./charts/control-network-traffic \
-  --namespace control-network-traffic \
-  --reuse-values \
-  --set backend.failureRate=1.0
-```
-
-Expected: circuit breaker ejects all backend instances; frontend surfaces error.
-
-### Scenario D – Pod kill
-
-```bash
-# Delete the backend pod; OpenShift restarts it automatically
-oc delete pod -l app.kubernetes.io/name=backend
-```
-
-Expected: brief 503, then recovery once the new pod passes readiness probes.
 
 ---
 
-## Recovery
+## Scenario B — Latency injection
 
-Reset chaos toggles:
+Inject a 2 second artificial delay on every backend response:
+
+```bash
+helm upgrade cnt ./charts/control-network-traffic \
+  --namespace control-network-traffic \
+  --reuse-values \
+  --set backend.failureRate=0 \
+  --set backend.delayMs=2000
+
+oc rollout status deployment/backend -n control-network-traffic
+```
+
+Verify:
+
+```bash
+time curl -s http://localhost:8080/ > /dev/null
+# Expected: real time > 2s
+```
+
+---
+
+## Scenario C — Total backend failure
+
+```bash
+helm upgrade cnt ./charts/control-network-traffic \
+  --namespace control-network-traffic \
+  --reuse-values \
+  --set backend.failureRate=1.0 \
+  --set backend.delayMs=0
+
+oc rollout status deployment/backend -n control-network-traffic
+```
+
+Verify every request surfaces a backend error:
+
+```bash
+curl -s http://localhost:8080/ | jq '.api.error'
+# Expected: "backend call failed: backend returned status 500: ..."
+```
+
+---
+
+## Scenario D — Pod kill
+
+Reset chaos toggles first, then delete the backend pod:
 
 ```bash
 helm upgrade cnt ./charts/control-network-traffic \
@@ -72,6 +97,35 @@ helm upgrade cnt ./charts/control-network-traffic \
   --reuse-values \
   --set backend.failureRate=0 \
   --set backend.delayMs=0
+
+oc rollout status deployment/backend -n control-network-traffic
+```
+
+Then in a separate terminal, poll while deleting the pod:
+
+```bash
+# Terminal 1 — poll continuously
+watch -n1 'curl -s http://localhost:8080/ | jq -r "if .api.backend then \"ok: \\(.api.backend.version)\" else \"FAIL\" end"'
+
+# Terminal 2 — kill the pod
+oc delete pod -l app.kubernetes.io/name=backend,version=v1 -n control-network-traffic
+```
+
+Expected: brief FAIL responses while the pod restarts, then recovery once the new
+pod passes readiness probes (~10–20 seconds).
+
+---
+
+## Recovery — reset all chaos toggles
+
+```bash
+helm upgrade cnt ./charts/control-network-traffic \
+  --namespace control-network-traffic \
+  --reuse-values \
+  --set backend.failureRate=0 \
+  --set backend.delayMs=0
+
+oc rollout status deployment/backend -n control-network-traffic
 ```
 
 ---
@@ -80,3 +134,4 @@ helm upgrade cnt ./charts/control-network-traffic \
 
 - [HashiCorp Tutorial: Consul and Chaos Engineering](https://developer.hashicorp.com/consul/tutorials/control-network-traffic/introduction-chaos-engineering)
 - Backend service `FAILURE_RATE` and `DELAY_MS` env vars (see `services/backend/main.go`)
+
