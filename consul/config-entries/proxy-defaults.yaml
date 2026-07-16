@@ -9,7 +9,7 @@
 # Apply with:
 #   consul config write consul/config-entries/proxy-defaults.yaml
 #
-# Reference: https://developer.hashicorp.com/consul/docs/connect/config-entries/proxy-defaults
+# Reference: developer.hashicorp.com/consul/docs/connect/config-entries/proxy-defaults
 
 Kind: "proxy-defaults"
 Name: "global"

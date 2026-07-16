@@ -11,7 +11,7 @@
 # Apply with:
 #   consul config write consul/config-entries/service-router.yaml
 #
-# Reference: https://developer.hashicorp.com/consul/docs/connect/config-entries/service-router
+# Reference: developer.hashicorp.com/consul/docs/connect/config-entries/service-router
 
 Kind: "service-router"
 Name: "backend"

@@ -13,7 +13,7 @@
 # or via the OpenShift / k8s CRD (if consul-k8s is installed):
 #   kubectl apply -f consul/config-entries/service-resolver.yaml
 #
-# Reference: https://developer.hashicorp.com/consul/docs/connect/config-entries/service-resolver
+# Reference: developer.hashicorp.com/consul/docs/connect/config-entries/service-resolver
 
 Kind: "service-resolver"
 Name: "backend"

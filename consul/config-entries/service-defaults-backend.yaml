@@ -9,8 +9,8 @@
 #   consul config write consul/config-entries/service-defaults-backend.yaml
 #
 # Reference:
-#   https://developer.hashicorp.com/consul/docs/connect/config-entries/service-defaults
-#   https://developer.hashicorp.com/consul/tutorials/control-network-traffic/service-mesh-circuit-breaking
+#   developer.hashicorp.com/consul/docs/connect/config-entries/service-defaults
+#   developer.hashicorp.com/consul/tutorials/control-network-traffic/service-mesh-circuit-breaking
 
 Kind: "service-defaults"
 Name: "backend"

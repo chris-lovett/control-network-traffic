@@ -13,7 +13,7 @@
 # Apply with:
 #   consul config write consul/config-entries/service-splitter.yaml
 #
-# Reference: https://developer.hashicorp.com/consul/docs/connect/config-entries/service-splitter
+# Reference: developer.hashicorp.com/consul/docs/connect/config-entries/service-splitter
 
 Kind: "service-splitter"
 Name: "backend"
