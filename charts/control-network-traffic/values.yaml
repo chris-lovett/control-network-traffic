@@ -2,7 +2,7 @@
 # Override per-environment or per-demo scenario as needed.
 
 # -- Global image pull policy. Use Always for demo environments.
-imagePullPolicy: IfNotPresent
+imagePullPolicy: Always
 
 # -- Optional image pull secrets (e.g. for private registries).
 imagePullSecrets:
