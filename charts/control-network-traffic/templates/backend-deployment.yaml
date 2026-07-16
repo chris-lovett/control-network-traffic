@@ -31,7 +31,6 @@ spec:
       {{- end }}
       securityContext:
         runAsNonRoot: {{ .Values.backend.securityContext.runAsNonRoot }}
-        runAsUser: {{ .Values.backend.securityContext.runAsUser }}
       containers:
         - name: backend
           image: "{{ .Values.backend.image.repository }}:{{ .Values.backend.image.tag }}"

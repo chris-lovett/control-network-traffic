@@ -28,7 +28,6 @@ spec:
       {{- end }}
       securityContext:
         runAsNonRoot: {{ .Values.frontend.securityContext.runAsNonRoot }}
-        runAsUser: {{ .Values.frontend.securityContext.runAsUser }}
       containers:
         - name: frontend
           image: "{{ .Values.frontend.image.repository }}:{{ .Values.frontend.image.tag }}"

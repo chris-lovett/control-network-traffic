@@ -27,7 +27,6 @@ spec:
       {{- end }}
       securityContext:
         runAsNonRoot: {{ .Values.api.securityContext.runAsNonRoot }}
-        runAsUser: {{ .Values.api.securityContext.runAsUser }}
       containers:
         - name: api
           image: "{{ .Values.api.image.repository }}:{{ .Values.api.image.tag }}"

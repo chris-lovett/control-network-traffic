@@ -28,10 +28,9 @@ frontend:
     limits:
       cpu: "200m"
       memory: "128Mi"
-  # OpenShift: run as a non-root UID
+  # OpenShift: run as a non-root UID (UID auto-assigned from namespace range)
   securityContext:
     runAsNonRoot: true
-    runAsUser: 1001
     allowPrivilegeEscalation: false
 
 # ---------------------------------------------------------------------------
@@ -55,7 +54,6 @@ api:
       memory: "128Mi"
   securityContext:
     runAsNonRoot: true
-    runAsUser: 1001
     allowPrivilegeEscalation: false
 
 # ---------------------------------------------------------------------------
@@ -80,7 +78,6 @@ backend:
       memory: "128Mi"
   securityContext:
     runAsNonRoot: true
-    runAsUser: 1001
     allowPrivilegeEscalation: false
 
 # ---------------------------------------------------------------------------
@@ -106,7 +103,6 @@ backendV2:
       memory: "128Mi"
   securityContext:
     runAsNonRoot: true
-    runAsUser: 1001
     allowPrivilegeEscalation: false
 
 # ---------------------------------------------------------------------------
