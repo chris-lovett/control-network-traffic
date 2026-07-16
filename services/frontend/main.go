@@ -55,7 +55,7 @@ func rootHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Call api and attach its response (which itself contains backend's response).
-	apiResp, err := callAPI()
+	apiResp, err := callAPI(r)
 	if err != nil {
 		resp.Error = fmt.Sprintf("api call failed: %v", err)
 		log.Printf("[%s] api error: %v", serviceName, err)
@@ -70,13 +70,20 @@ func rootHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 // callAPI fetches the api root endpoint and returns the raw JSON body.
-func callAPI() (json.RawMessage, error) {
+// Incoming headers are forwarded so Consul service-router rules (e.g. X-Backend-Version) propagate.
+func callAPI(incoming *http.Request) (json.RawMessage, error) {
 	url := apiURL + "/"
 	client := &http.Client{Timeout: 10 * time.Second}
 
 	req, err := http.NewRequest(http.MethodGet, url, nil)
 	if err != nil {
 		return nil, err
+	}
+
+	for key, vals := range incoming.Header {
+		for _, v := range vals {
+			req.Header.Add(key, v)
+		}
 	}
 
 	res, err := client.Do(req)

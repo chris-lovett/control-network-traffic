@@ -55,7 +55,7 @@ func rootHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Call backend and attach its response.
-	backendResp, err := callBackend()
+	backendResp, err := callBackend(r)
 	if err != nil {
 		resp.Error = fmt.Sprintf("backend call failed: %v", err)
 		log.Printf("[%s] backend error: %v", serviceName, err)
@@ -70,13 +70,20 @@ func rootHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 // callBackend fetches the backend root endpoint and returns the raw JSON body.
-func callBackend() (json.RawMessage, error) {
+// Incoming headers are forwarded so Consul service-router rules (e.g. X-Backend-Version) propagate.
+func callBackend(incoming *http.Request) (json.RawMessage, error) {
 	url := backendURL + "/"
 	client := &http.Client{Timeout: 5 * time.Second}
 
 	req, err := http.NewRequest(http.MethodGet, url, nil)
 	if err != nil {
 		return nil, err
+	}
+
+	for key, vals := range incoming.Header {
+		for _, v := range vals {
+			req.Header.Add(key, v)
+		}
 	}
 
 	res, err := client.Do(req)
