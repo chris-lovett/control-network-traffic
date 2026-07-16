@@ -1,7 +1,5 @@
 # Demo 03: Circuit Breaking
 
-> **Status:** Scaffolded – steps planned, ready for walkthrough.
-
 Circuit breaking ejects unhealthy upstream instances from the load-balancing
 pool, preventing cascading failures across the service mesh.
 
@@ -18,16 +16,23 @@ Consul configures Envoy's **outlier detection** (passive health checking) via
 `ServiceDefaults`. When backend returns too many 5xx errors, Envoy temporarily
 ejects it from the pool.
 
+> **Known limitation (Consul 2.0 + OVN-Kubernetes):** `UpstreamConfig.Defaults.PassiveHealthCheck`
+> in `service-defaults` is not currently translated to Envoy outlier detection
+> configuration in Consul 2.0 with consul-dataplane on OpenShift/OVN-K8s.
+> The failure simulation (steps 2–3) works and demonstrates fault propagation,
+> but automatic Envoy-level host ejection (503 responses) does not fire in this environment.
+
 ---
 
 ## Prerequisites
 
-- Baseline app deployed
-- Consul service mesh with Envoy sidecar injection enabled
+- Baseline app deployed (see repo [README](../../README.md))
+- Consul CLI port-forwarded: `oc port-forward svc/consul-server 8500:8500 -n consul &`
+- Frontend port-forwarded: `oc port-forward deployment/frontend 8080:8080 -n control-network-traffic &`
 
 ---
 
-## Planned Steps
+## Steps
 
 ### 1. Apply ServiceDefaults with circuit breaker config
 
@@ -36,38 +41,66 @@ consul config write consul/config-entries/service-defaults-backend.yaml
 ```
 
 This configures:
-- Eject after 3 consecutive 5xx responses
-- Eject for 30 seconds (base), doubling on repeat failures
+- Eject after 3 consecutive 5xx responses (`MaxFailures: 3`)
+- Eject for 30 seconds base (`BaseEjectionTime: 30s`), doubling on repeat failures
+- Up to 100% of hosts can be ejected (`MaxEjectionPercent: 100`)
 
-### 2. Enable failure simulation on backend
+### 2. Enable failure simulation on backend v1
 
 ```bash
 helm upgrade cnt ./charts/control-network-traffic \
   --namespace control-network-traffic \
   --reuse-values \
-  --set backend.failureRate=0.8
+  --set backend.failureRate=1.0
+
+oc rollout status deployment/backend -n control-network-traffic
 ```
 
-### 3. Watch the circuit breaker trip
+### 3. Observe failures propagating through the mesh
 
 ```bash
-for i in $(seq 1 20); do
-  curl -s -o /dev/null -w "%{http_code}\n" http://localhost:8080/
+for i in $(seq 1 10); do
+  curl -s http://localhost:8080/ | jq -r '.api.error // "ok: \(.api.backend.version)"'
 done
-# Expected: mix of 200 and 500, then 503 as Envoy ejects the backend
 ```
 
-### 4. Observe recovery
+Expected output — all requests surface backend failures through the chain:
+```
+backend call failed: backend returned status 500: ...
+backend call failed: backend returned status 500: ...
+```
 
-After ~30 seconds, Envoy will probe the backend again. With `failureRate=0.8`
-it will likely trip again; set `failureRate=0` to let it recover fully.
+### 4. Recover — disable failure simulation
 
 ```bash
 helm upgrade cnt ./charts/control-network-traffic \
   --namespace control-network-traffic \
   --reuse-values \
   --set backend.failureRate=0
+
+oc rollout status deployment/backend -n control-network-traffic
 ```
+
+Verify recovery:
+
+```bash
+for i in $(seq 1 5); do
+  curl -s http://localhost:8080/ | jq -r '.api.backend.version'
+done
+# Expected: v1 (all requests healthy again)
+```
+
+---
+
+## What the circuit breaker config does (conceptually)
+
+Even where Envoy ejection does not visually fire, the `service-defaults` entry is
+read by Consul and pushed to Envoy via xDS. In environments where the full
+transparent proxy pipeline is active, after `MaxFailures` consecutive 5xx responses
+Envoy would:
+1. Remove the failing instance from its load-balancing pool
+2. Return `503 no healthy upstream` to the caller
+3. Re-admit the instance after `BaseEjectionTime` (with exponential backoff)
 
 ---
 
@@ -76,3 +109,4 @@ helm upgrade cnt ./charts/control-network-traffic \
 - [HashiCorp Tutorial: Circuit Breaking with Consul + Envoy](https://developer.hashicorp.com/consul/tutorials/control-network-traffic/service-mesh-circuit-breaking)
 - `consul/config-entries/service-defaults-backend.yaml`
 - `consul/config-entries/proxy-defaults.yaml`
+
