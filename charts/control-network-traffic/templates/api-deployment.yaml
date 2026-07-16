@@ -59,3 +59,8 @@ spec:
             {{- toYaml .Values.api.resources | nindent 12 }}
           securityContext:
             allowPrivilegeEscalation: {{ .Values.api.securityContext.allowPrivilegeEscalation }}
+            capabilities:
+              drop:
+                - ALL
+            seccompProfile:
+              type: RuntimeDefault
