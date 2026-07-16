@@ -90,7 +90,7 @@ backendV2:
   replicaCount: 1
   image:
     repository: ghcr.io/chris-lovett/control-network-traffic/backend
-    tag: "v2"
+    tag: "v1"
   appVersion: "v2"
   port: 8080
   failureRate: "0"
