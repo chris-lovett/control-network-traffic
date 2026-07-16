@@ -5,7 +5,8 @@
 imagePullPolicy: IfNotPresent
 
 # -- Optional image pull secrets (e.g. for private registries).
-imagePullSecrets: []
+imagePullSecrets:
+  - name: 19261309-openshift-secret-pull-secret
 
 # -- Namespace is set by `helm install --namespace`. No override needed here.
 
