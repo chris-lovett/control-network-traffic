@@ -71,7 +71,28 @@ Full architecture details: [`docs/architecture.md`](docs/architecture.md)
 oc login <your-cluster-api-url>
 ```
 
-### 2. Deploy the baseline application
+### 2. Create the GHCR image pull secret
+
+The container images are hosted on GitHub Container Registry (ghcr.io) and require
+a GitHub Personal Access Token (PAT) with the `read:packages` scope.
+
+1. [Create a PAT](https://github.com/settings/tokens) with `read:packages` scope.
+2. Create the secret and link it to the default service account:
+
+```bash
+oc create secret docker-registry ghcr-pull-secret \
+  --docker-server=ghcr.io \
+  --docker-username=<your-github-username> \
+  --docker-password=<your-github-pat> \
+  -n control-network-traffic
+
+oc secrets link default ghcr-pull-secret --for=pull -n control-network-traffic
+```
+
+> **Note:** The namespace must exist before running these commands. If it doesn't,
+> create it first with `oc new-project control-network-traffic`.
+
+### 3. Deploy the baseline application
 
 ```bash
 ./scripts/deploy-baseline.sh
@@ -80,7 +101,7 @@ oc login <your-cluster-api-url>
 This creates the `control-network-traffic` namespace and installs the Helm chart
 with frontend, api, and backend (v1).
 
-### 3. Verify the request chain
+### 4. Verify the request chain
 
 ```bash
 ./scripts/check-health.sh
@@ -98,7 +119,7 @@ Expected output includes:
 }
 ```
 
-### 4. Clean up
+### 5. Clean up
 
 ```bash
 ./scripts/cleanup.sh
