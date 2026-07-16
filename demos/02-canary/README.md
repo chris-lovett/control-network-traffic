@@ -1,7 +1,5 @@
 # Demo 02: Canary Deployment with Service Splitters
 
-> **Status:** Scaffolded – steps planned, ready for walkthrough.
-
 A canary deployment gradually shifts traffic from v1 to v2, letting you
 validate the new version on a small percentage of real traffic before full cut-over.
 
@@ -17,38 +15,72 @@ validate the new version on a small percentage of real traffic before full cut-o
 
 ## Prerequisites
 
-- Blue/green demo completed (or baseline installed + Consul config entries applied)
-- Both backend v1 and v2 deployments running
+- Baseline installed (see repo [README](../../README.md))
+- Consul CLI available and port-forwarded to the Consul server
 
 ---
 
-## Planned Steps
+## Steps
 
-### 1. Deploy both backend versions (if not already done)
+### 1. Port-forward the Consul server (if not already running)
+
+```bash
+oc port-forward svc/consul-server 8500:8500 -n consul &
+```
+
+### 2. Deploy both backend versions (if not already done)
 
 ```bash
 helm upgrade cnt ./charts/control-network-traffic \
   --namespace control-network-traffic \
   --reuse-values \
   --set backendV2.enabled=true
+
+oc rollout status deployment/backend-v2 -n control-network-traffic
 ```
 
-### 2. Apply ServiceResolver
+### 3. Apply the ServiceResolver
 
 ```bash
 consul config write consul/config-entries/service-resolver.yaml
 ```
 
-### 3. Start canary at 10%
+### 4. Remove the ServiceRouter (if active from a previous demo)
 
-Edit `consul/config-entries/service-splitter.yaml`:
+The ServiceRouter bypasses the ServiceSplitter. Remove it before starting the canary:
 
-```yaml
-Splits:
-  - Weight: 90
-    ServiceSubset: "v1"
-  - Weight: 10
-    ServiceSubset: "v2"
+```bash
+consul config delete -kind service-router -name backend
+```
+
+> If no router is active this command will error — that's fine, continue.
+
+### 5. Port-forward to frontend and verify baseline (100% v1)
+
+```bash
+oc port-forward deployment/frontend 8080:8080 -n control-network-traffic &
+
+for i in $(seq 1 10); do
+  curl -s http://localhost:8080/ | jq -r '.api.backend.version'
+done
+# Expected: all "v1"
+```
+
+### 6. Start canary at 10%
+
+Edit `consul/config-entries/service-splitter.yaml` — set the weights:
+
+```hcl
+Splits = [
+  {
+    Weight        = 90
+    ServiceSubset = "v1"
+  },
+  {
+    Weight        = 10
+    ServiceSubset = "v2"
+  }
+]
 ```
 
 Apply:
@@ -57,23 +89,42 @@ Apply:
 consul config write consul/config-entries/service-splitter.yaml
 ```
 
-### 4. Verify traffic split
+Verify:
 
 ```bash
 for i in $(seq 1 20); do
   curl -s http://localhost:8080/ | jq -r '.api.backend.version'
 done
-# Expected: ~18 responses "v1", ~2 responses "v2"
+# Expected: ~18 "v1", ~2 "v2" (10% canary)
 ```
 
-### 5. Incrementally increase canary traffic
+### 7. Incrementally increase canary traffic
 
-Repeat step 3–4 at 25%, 50%, 75%, then 100%.
+Repeat step 6 with increasing v2 weights:
 
-### 6. Promote or rollback
+| Stage | v1 weight | v2 weight |
+|-------|-----------|-----------|
+| Baseline | 100 | 0 |
+| Canary start | 90 | 10 |
+| Expand | 50 | 50 |
+| Pre-promote | 10 | 90 |
+| Full cut-over | 0 | 100 |
 
-- **Promote:** set Weight to 100% v2, remove v1.
-- **Rollback:** set Weight back to 100% v1.
+Each time, apply the splitter and run the 20-request verification loop.
+
+### 8. Promote or rollback
+
+**Promote to v2:**
+```bash
+# Set Weight = 100 for v2, remove v1 split, apply
+consul config write consul/config-entries/service-splitter.yaml
+```
+
+**Rollback to v1:**
+```bash
+# Set Weight = 100 for v1, remove v2 split, apply
+consul config write consul/config-entries/service-splitter.yaml
+```
 
 ---
 
@@ -82,3 +133,4 @@ Repeat step 3–4 at 25%, 50%, 75%, then 100%.
 - [HashiCorp Tutorial: Canary Deployments with Service Splitters](https://developer.hashicorp.com/consul/tutorials/control-network-traffic/service-splitters-canary-deployment)
 - `consul/config-entries/service-splitter.yaml`
 - `consul/config-entries/service-resolver.yaml`
+
