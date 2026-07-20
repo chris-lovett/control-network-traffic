@@ -24,6 +24,14 @@ Traffic is controlled by a **Consul ServiceResolver + ServiceRouter**.
 - `consul` CLI or `kubectl` for applying config entries
 - Baseline demo app installed (see repo [README](../../README.md))
 
+> **Port-forward required before any `consul config` commands.**
+> The `consul` CLI connects to `127.0.0.1:8500` by default. Open a dedicated
+> terminal and keep this running for the duration of the demo:
+>
+> ```bash
+> oc port-forward svc/consul-server 8500:8500 -n consul
+> ```
+
 ---
 
 ## Step 1 – Deploy the baseline (blue only)
@@ -66,13 +74,21 @@ oc get pods -l app.kubernetes.io/name=backend
 
 ## Step 3 – Apply Consul config entries
 
-Apply the ServiceResolver so Consul knows about v1/v2 subsets:
+> If you have attempted this step before, a stale `service-router` entry may
+> exist and will block writing the resolver. Delete it first:
+>
+> ```bash
+> consul config delete -kind service-router -name backend
+> ```
+
+Apply the ServiceResolver **first** so Consul knows about v1/v2 subsets before
+the router references them:
 
 ```bash
 consul config write consul/config-entries/service-resolver.yaml
 ```
 
-Apply the ServiceRouter (all traffic to v1 by default):
+Then apply the ServiceRouter (all traffic to v1 by default):
 
 ```bash
 consul config write consul/config-entries/service-router.yaml
