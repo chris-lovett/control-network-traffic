@@ -15,7 +15,7 @@ The `backend` service has built-in chaos toggles controlled by environment varia
 ## Prerequisites
 
 - Baseline app deployed (see repo [README](../../README.md))
-- Frontend port-forwarded: `oc port-forward deployment/frontend 8080:8080 -n control-network-traffic &`
+- Frontend port-forwarded (dedicated terminal): `oc port-forward svc/frontend 18080:8080 -n control-network-traffic`
 
 ---
 
@@ -36,7 +36,7 @@ Verify:
 
 ```bash
 for i in $(seq 1 10); do
-  curl -s http://localhost:8080/ | jq -r 'if .api.backend then "ok: \(.api.backend.version)" else "FAIL" end'
+  curl -s http://localhost:18080/ | jq -r 'if .api.backend then "ok: \(.api.backend.version)" else "FAIL" end'
 done
 # Expected: ~50% ok, ~50% FAIL
 ```
@@ -60,7 +60,7 @@ oc rollout status deployment/backend -n control-network-traffic
 Verify:
 
 ```bash
-time curl -s http://localhost:8080/ > /dev/null
+time curl -s http://localhost:18080/ > /dev/null
 # Expected: real time > 2s
 ```
 
@@ -81,7 +81,7 @@ oc rollout status deployment/backend -n control-network-traffic
 Verify every request surfaces a backend error:
 
 ```bash
-curl -s http://localhost:8080/ | jq '.api.error'
+curl -s http://localhost:18080/ | jq '.api.error'
 # Expected: "backend call failed: backend returned status 500: ..."
 ```
 
@@ -105,7 +105,7 @@ Then in a separate terminal, poll while deleting the pod:
 
 ```bash
 # Terminal 1 — poll continuously
-watch -n1 'curl -s http://localhost:8080/ | jq -r "if .api.backend then \"ok: \\(.api.backend.version)\" else \"FAIL\" end"'
+watch -n1 'curl -s http://localhost:18080/ | jq -r "if .api.backend then \"ok: \\(.api.backend.version)\" else \"FAIL\" end"'
 
 # Terminal 2 — kill the pod
 oc delete pod -l app.kubernetes.io/name=backend,version=v1 -n control-network-traffic

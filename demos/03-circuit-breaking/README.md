@@ -27,8 +27,8 @@ ejects it from the pool.
 ## Prerequisites
 
 - Baseline app deployed (see repo [README](../../README.md))
-- Consul CLI port-forwarded: `oc port-forward svc/consul-server 8500:8500 -n consul &`
-- Frontend port-forwarded: `oc port-forward deployment/frontend 8080:8080 -n control-network-traffic &`
+- Consul CLI port-forwarded (Terminal A): `oc port-forward svc/consul-server 8500:8500 -n consul`
+- Frontend port-forwarded (Terminal B): `oc port-forward svc/frontend 18080:8080 -n control-network-traffic`
 
 ---
 
@@ -60,7 +60,7 @@ oc rollout status deployment/backend -n control-network-traffic
 
 ```bash
 for i in $(seq 1 10); do
-  curl -s http://localhost:8080/ | jq -r '.api.error // "ok: \(.api.backend.version)"'
+  curl -s http://localhost:18080/ | jq -r '.api.error // "ok: \(.api.backend.version)"'
 done
 ```
 
@@ -85,7 +85,7 @@ Verify recovery:
 
 ```bash
 for i in $(seq 1 5); do
-  curl -s http://localhost:8080/ | jq -r '.api.backend.version'
+  curl -s http://localhost:18080/ | jq -r '.api.backend.version'
 done
 # Expected: v1 (all requests healthy again)
 ```
