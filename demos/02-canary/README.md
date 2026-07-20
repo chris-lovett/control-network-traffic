@@ -30,6 +30,8 @@ oc port-forward svc/consul-server 8500:8500 -n consul &
 
 ### 2. Deploy both backend versions (if not already done)
 
+> Run this from the **repo root**, not from inside the `demos/` directory.
+
 ```bash
 helm upgrade cnt ./charts/control-network-traffic \
   --namespace control-network-traffic \
@@ -57,11 +59,15 @@ consul config delete -kind service-router -name backend
 
 ### 5. Port-forward to frontend and verify baseline (100% v1)
 
-```bash
-oc port-forward deployment/frontend 8080:8080 -n control-network-traffic &
+> Open this in a dedicated terminal and keep it running for all remaining curl steps.
 
+```bash
+oc port-forward svc/frontend 18080:8080 -n control-network-traffic
+```
+
+```bash
 for i in $(seq 1 10); do
-  curl -s http://localhost:8080/ | jq -r '.api.backend.version'
+  curl -s http://localhost:18080/ | jq -r '.api.backend.version'
 done
 # Expected: all "v1"
 ```
@@ -93,7 +99,7 @@ Verify:
 
 ```bash
 for i in $(seq 1 20); do
-  curl -s http://localhost:8080/ | jq -r '.api.backend.version'
+  curl -s http://localhost:18080/ | jq -r '.api.backend.version'
 done
 # Expected: ~18 "v1", ~2 "v2" (10% canary)
 ```
