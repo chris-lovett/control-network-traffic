@@ -24,12 +24,17 @@ Traffic is controlled by a **Consul ServiceResolver + ServiceRouter**.
 - `consul` CLI or `kubectl` for applying config entries
 - Baseline demo app installed (see repo [README](../../README.md))
 
-> **Port-forward required before any `consul config` commands.**
-> The `consul` CLI connects to `127.0.0.1:8500` by default. Open a dedicated
-> terminal and keep this running for the duration of the demo:
+> **Two port-forwards are required for this demo — open each in a dedicated terminal
+> and keep them running for the duration.**
 >
+> Terminal A — Consul API (required for all `consul config` commands):
 > ```bash
 > oc port-forward svc/consul-server 8500:8500 -n consul
+> ```
+>
+> Terminal B — Frontend traffic (required for all `curl` verification steps):
+> ```bash
+> oc port-forward svc/frontend 18080:8080 -n control-network-traffic
 > ```
 
 ---
@@ -46,7 +51,7 @@ Verify:
 
 ```bash
 oc rollout status deployment/backend
-curl -s http://localhost:8080/ | jq '.api.backend.version'
+curl -s http://localhost:18080/ | jq '.api.backend.version'
 # Expected: "v1"
 ```
 
@@ -98,7 +103,7 @@ Verify traffic still goes to v1:
 
 ```bash
 for i in $(seq 1 5); do
-  curl -s http://localhost:8080/ | jq -r '.api.backend.version'
+  curl -s http://localhost:18080/ | jq -r '.api.backend.version'
 done
 # Expected: v1 (all requests)
 ```
@@ -111,11 +116,11 @@ The ServiceRouter sends requests with `X-Backend-Version: v2` to v2.
 Use this to validate the new version without affecting regular users:
 
 ```bash
-curl -s -H "X-Backend-Version: v2" http://localhost:8080/ | jq '.api.backend.version'
+curl -s -H "X-Backend-Version: v2" http://localhost:18080/ | jq '.api.backend.version'
 # Expected: "v2"
 
 # Regular traffic still hits v1:
-curl -s http://localhost:8080/ | jq '.api.backend.version'
+curl -s http://localhost:18080/ | jq '.api.backend.version'
 # Expected: "v1"
 ```
 
@@ -134,7 +139,7 @@ Verify:
 
 ```bash
 for i in $(seq 1 5); do
-  curl -s http://localhost:8080/ | jq -r '.api.backend.version'
+  curl -s http://localhost:18080/ | jq -r '.api.backend.version'
 done
 # Expected: v2 (all requests)
 ```
