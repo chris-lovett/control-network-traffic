@@ -18,7 +18,12 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        service: [frontend, api, backend]
+        include:
+          - service: frontend
+          - service: api
+          - service: backend
+            extra_tags: |
+              ghcr.io/${{ github.repository_owner }}/control-network-traffic/backend:v2
 
     steps:
       - name: Checkout
@@ -42,5 +47,6 @@ jobs:
           tags: |
             ghcr.io/${{ github.repository_owner }}/control-network-traffic/${{ matrix.service }}:v1
             ghcr.io/${{ github.repository_owner }}/control-network-traffic/${{ matrix.service }}:latest
+            ${{ matrix.extra_tags }}
           cache-from: type=gha,scope=${{ matrix.service }}
           cache-to: type=gha,mode=max,scope=${{ matrix.service }}
