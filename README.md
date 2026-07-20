@@ -132,9 +132,9 @@ Expected output includes:
 | # | Demo | Consul Feature | Status |
 |---|------|---------------|--------|
 | 01 | [Blue/Green](demos/01-blue-green/README.md) | ServiceResolver + ServiceRouter | ✅ Ready |
-| 02 | [Canary](demos/02-canary/README.md) | ServiceSplitter | 📋 Scaffolded |
-| 03 | [Circuit Breaking](demos/03-circuit-breaking/README.md) | ServiceDefaults (outlier detection) | 📋 Scaffolded |
-| 04 | [Chaos Engineering](demos/04-chaos/README.md) | Fault injection + FAILURE_RATE/DELAY_MS | 📋 Scaffolded |
+| 02 | [Canary](demos/02-canary/README.md) | ServiceSplitter | ✅ Ready |
+| 03 | [Circuit Breaking](demos/03-circuit-breaking/README.md) | ServiceDefaults (outlier detection) | ✅ Ready |
+| 04 | [Chaos Engineering](demos/04-chaos/README.md) | Fault injection + FAILURE_RATE/DELAY_MS | ✅ Ready |
 
 ---
 
