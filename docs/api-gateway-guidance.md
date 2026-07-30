@@ -1,9 +1,43 @@
 # API Gateway Guidance
 
 Practitioner reference for Consul Enterprise API Gateway configuration in a
-shared, multi-app namespace. Use `Ctrl+F` during config review. For runnable
-examples, see [Demo 05](../demos/05-api-gateway-ingress/README.md) and
+shared, multi-app namespace. For runnable examples see
+[Demo 05](../demos/05-api-gateway-ingress/README.md) and
 [Demo 06](../demos/06-multi-app-gateway/README.md).
+
+---
+
+## Contents
+
+**Orientation**
+- [The architectural shift](#the-architectural-shift)
+- [Quick reference — concern to config](#quick-reference--concern-to-config)
+
+**Tuning principles** ← read when building or reviewing a gateway configuration
+- [Routing design](#routing-design)
+- [TLS policy](#tls-policy)
+- [Service intentions — namespace ≠ trust boundary](#service-intentions--namespace--trust-boundary)
+- [Per-route resilience](#per-route-resilience)
+- [Per-route rate limiting](#per-route-rate-limiting)
+- [Header policy](#header-policy)
+- [Observability](#observability)
+- [Sizing and scaling](#sizing-and-scaling)
+- [Config ownership](#config-ownership)
+- [Namespace grouping criteria](#namespace-grouping-criteria)
+
+**Anti-patterns** ← read when reviewing a PR or troubleshooting a live issue
+- [Anti-pattern index](#anti-pattern-index)
+- [1 — Wildcard intentions](#1--wildcard-intentions-just-for-the-migration)
+- [2 — Single catch-all route](#2--single-catch-all-route-serving-multiple-apps)
+- [3 — Shared TLS certificate](#3--shared-tls-certificate-across-unrelated-apps)
+- [4 — Blanket timeout/retry policy](#4--blanket-timeoutretry-policy-applied-gateway-wide)
+- [5 — Aggregate-only rate limiting](#5--aggregate-only-rate-limiting)
+- [6 — Gateway used for east-west traffic](#6--using-the-api-gateway-for-east-west-traffic)
+- [7 — Mixed compliance scopes](#7--mixing-compliance-scopes-without-a-deliberate-decision)
+- [8 — Under-sized gateway](#8--under-sizing-the-shared-gateway)
+- [9 — No config ownership](#9--no-clear-config-ownership)
+- [10 — Route sprawl](#10--route-sprawl-as-a-false-isolation-mechanism)
+- [11 — Retrying non-idempotent operations](#11--retrying-non-idempotent-operations)
 
 ---
 
@@ -27,6 +61,26 @@ Every tuning decision in this document maps to one of four concerns:
 | **Resilience** | Are timeouts, retries, and circuit breakers configured per-route to match each app's actual SLA? |
 | **Fairness** | Do per-route rate limits prevent any single app from degrading its neighbors? |
 | **Capacity** | Is the gateway sized against aggregate traffic across all apps, with peak-timing analysis done? |
+
+---
+
+## Quick reference — concern to config
+
+Jump directly to the section and Consul resource that addresses each concern.
+
+| Concern | Section | Primary Consul resource |
+|---------|---------|------------------------|
+| **Trust** — explicit service-to-service permissions | [Service intentions](#service-intentions--namespace--trust-boundary) | [`ServiceIntentions`](https://developer.hashicorp.com/consul/docs/connect/config-entries/service-intentions) |
+| **Routing** — hostname isolation, protocol separation | [Routing design](#routing-design) | [`HTTPRoute`](https://developer.hashicorp.com/consul/docs/north-south/api-gateway) |
+| **TLS** — per-hostname certs, cipher policy, Vault | [TLS policy](#tls-policy) | [`VaultPKISecret`](https://developer.hashicorp.com/vault/docs/platform/k8s/vso/api-reference#vaultpkisecret) |
+| **Resilience** — timeouts, retries, circuit breaking | [Per-route resilience](#per-route-resilience) | [`ServiceDefaults`](https://developer.hashicorp.com/consul/docs/connect/config-entries/service-defaults) |
+| **Fairness** — noisy-neighbor prevention | [Per-route rate limiting](#per-route-rate-limiting) | [`RouteRetryFilter`](https://developer.hashicorp.com/consul/docs/north-south/api-gateway) |
+| **Observability** — per-app metrics, access logs, tracing | [Observability](#observability) | `proxy-defaults` + Envoy stats tags |
+| **Capacity** — HPA, xDS memory, aggregate sizing | [Sizing and scaling](#sizing-and-scaling) | `HorizontalPodAutoscaler` |
+| **Ownership** — RBAC, CODEOWNERS, GitOps | [Config ownership](#config-ownership) | `CODEOWNERS` + `ReferenceGrant` |
+| **Grouping** — which apps belong together | [Namespace grouping criteria](#namespace-grouping-criteria) | Consul Enterprise namespaces |
+
+**Reviewing a PR or troubleshooting?** Go directly to the [Anti-pattern index](#anti-pattern-index).
 
 ---
 
@@ -619,9 +673,25 @@ requirement? If not, reconsider the grouping.
 
 ## Anti-patterns
 
-Each entry follows the same structure: what the anti-pattern looks like in
-config, what breaks, and the specific Consul resource or configuration that
-corrects it.
+Each entry follows the same structure: **What it looks like** (the config as
+it appears in practice) → **What breaks** (the specific failure mode) →
+**Correct pattern** (the deployable fix with the specific Consul resource).
+
+### Anti-pattern index
+
+| # | Anti-pattern | Symptom that surfaces it |
+|---|-------------|--------------------------|
+| [1](#1--wildcard-intentions-just-for-the-migration) | Wildcard intentions | Unrestricted lateral movement; fails security audit |
+| [2](#2--single-catch-all-route-serving-multiple-apps) | Single catch-all route | No per-app policy; misrouting; meaningless access logs |
+| [3](#3--shared-tls-certificate-across-unrelated-apps) | Shared TLS certificate | Coordinated multi-team outage on every cert event |
+| [4](#4--blanket-timeoutretry-policy-applied-gateway-wide) | Blanket timeout/retry policy | Silent duplicate transactions; auth timeouts 45× too long |
+| [5](#5--aggregate-only-rate-limiting) | Aggregate-only rate limiting | Well-behaved apps get 429s during a neighbor's burst |
+| [6](#6--using-the-api-gateway-for-east-west-traffic) | Gateway used for east-west | Latency, choke point, intention bypass, broken observability |
+| [7](#7--mixing-compliance-scopes-without-a-deliberate-decision) | Mixed compliance scopes | Unregulated apps pulled into audit scope |
+| [8](#8--under-sizing-the-shared-gateway) | Under-sized gateway | All apps in namespace go offline simultaneously under load |
+| [9](#9--no-clear-config-ownership) | No config ownership | Silent cross-team config changes; untraceable incidents |
+| [10](#10--route-sprawl-as-a-false-isolation-mechanism) | Route sprawl | Operational overhead without real isolation |
+| [11](#11--retrying-non-idempotent-operations) | Retrying non-idempotent ops | Silent duplicate operations; surfaces during reconciliation |
 
 ---
 
