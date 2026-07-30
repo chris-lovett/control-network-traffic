@@ -135,6 +135,8 @@ Expected output includes:
 | 02 | [Canary](demos/02-canary/README.md) | ServiceSplitter | ✅ Ready |
 | 03 | [Circuit Breaking](demos/03-circuit-breaking/README.md) | ServiceDefaults (outlier detection) | ✅ Ready |
 | 04 | [Chaos Engineering](demos/04-chaos/README.md) | Fault injection + FAILURE_RATE/DELAY_MS | ✅ Ready |
+| 05 | [API Gateway Ingress](demos/05-api-gateway-ingress/README.md) | GatewayClass + Gateway + HTTPRoute + per-route timeouts | ✅ Ready |
+| 06 | [Multi-App Gateway](demos/06-multi-app-gateway/README.md) | N-app namespace, explicit intentions, per-route rate limiting | ✅ Ready |
 
 ---
 
@@ -150,3 +152,6 @@ for full install/upgrade/uninstall instructions and configurable values.
 - [Consul: Canary Deployments with Service Splitters](https://developer.hashicorp.com/consul/tutorials/control-network-traffic/service-splitters-canary-deployment)
 - [Consul: Circuit Breaking with Envoy](https://developer.hashicorp.com/consul/tutorials/control-network-traffic/service-mesh-circuit-breaking)
 - [Consul: Chaos Engineering](https://developer.hashicorp.com/consul/tutorials/control-network-traffic/introduction-chaos-engineering)
+- [Consul: API Gateway](https://developer.hashicorp.com/consul/docs/api-gateway)
+- [Kubernetes Gateway API Spec](https://gateway-api.sigs.k8s.io/)
+- [API Gateway Tuning & Anti-Pattern Guidance](docs/api-gateway-guidance.md)

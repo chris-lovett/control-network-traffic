@@ -1,0 +1,163 @@
+# api-gateway.yaml
+#
+# Consul API Gateway configuration for north-south ingress into the
+# control-network-traffic namespace.
+#
+# This file contains three related resources that must be applied in order:
+#
+#   1. GatewayClass  – registers "consul" as the controller
+#   2. Gateway       – declares the shared listener (port 8443, TLS)
+#   3. HTTPRoute     – binds the frontend service to hostname api.demo.local
+#
+# A second HTTPRoute (for Demo 06) binds a reporting service on a separate
+# hostname to demonstrate multi-app isolation on a shared gateway.
+#
+# Apply with:
+#   kubectl apply -f consul/config-entries/api-gateway.yaml
+#
+# NOTE: The Gateway API CRDs must already be installed. Consul Enterprise
+# installs them automatically when api-gateway controller is enabled.
+#
+# Key design decisions documented here:
+#   - Hostname-based routing (not path-based) so each app has an independent,
+#     auditable front door and route ownership is unambiguous.
+#   - Per-route timeouts set explicitly — never rely on a gateway-wide default
+#     because different apps have different SLAs.
+#   - Per-hostname SNI certificates so each app's cert lifecycle (issuance,
+#     rotation, revocation) is independent even though the gateway is shared.
+#   - mTLS is terminated at the gateway and re-encrypted downstream via the
+#     Consul service mesh sidecar — traffic never crosses the mesh unencrypted.
+
+---
+# ─────────────────────────────────────────────────────────────────────────────
+# 1. GatewayClass
+#    Tells the Kubernetes Gateway API which controller manages this gateway.
+#    "consul" is the controller name registered by Consul Enterprise's
+#    api-gateway component.
+# ─────────────────────────────────────────────────────────────────────────────
+apiVersion: gateway.networking.k8s.io/v1beta1
+kind: GatewayClass
+metadata:
+  name: consul
+spec:
+  controllerName: hashicorp.com/consul
+
+---
+# ─────────────────────────────────────────────────────────────────────────────
+# 2. Gateway
+#    Declares the shared listener. One Gateway per namespace is the target
+#    architecture. The listener binds to port 8443 with TLS termination.
+#
+#    TLS policy:
+#      - Minimum TLS 1.2, 1.3 preferred (set via Consul API GW config)
+#      - Each app gets its own certificateRefs entry (SNI routing) so that
+#        cert rotation for one app does not require touching another app's
+#        listener config.
+#      - In production, reference Vault-issued certs via cert-manager or the
+#        Vault Secrets Operator rather than manually managed Secrets.
+# ─────────────────────────────────────────────────────────────────────────────
+apiVersion: gateway.networking.k8s.io/v1beta1
+kind: Gateway
+metadata:
+  name: api-gateway
+  namespace: control-network-traffic
+spec:
+  gatewayClassName: consul
+  listeners:
+    - name: https
+      protocol: HTTPS
+      port: 8443
+      # allowedRoutes restricts which namespaces can bind HTTPRoutes to this
+      # listener. "Same" means only routes in this namespace — prevents other
+      # teams from accidentally (or maliciously) binding to this gateway.
+      allowedRoutes:
+        namespaces:
+          from: Same
+      tls:
+        mode: Terminate
+        # Reference per-app certificates by SNI hostname.
+        # Each Secret should be managed independently (separate rotation schedules).
+        # Replace with your actual Secret names.
+        certificateRefs:
+          - name: frontend-tls-cert   # cert for api.demo.local
+            kind: Secret
+          - name: reporting-tls-cert  # cert for reporting.demo.local (Demo 06)
+            kind: Secret
+
+---
+# ─────────────────────────────────────────────────────────────────────────────
+# 3. HTTPRoute — frontend (Demo 05)
+#    Binds hostname api.demo.local → frontend service.
+#
+#    Timeout ladder (banking pattern):
+#      Client timeout > gateway timeout > upstream timeout
+#      This route: gateway request timeout = 10s, backend timeout = 8s.
+#      Set your client (e.g. OCP Route or load balancer) timeout to 12s.
+#
+#    ANTI-PATTERN: do not set a single catch-all hostname: ["*"] route that
+#    serves multiple apps. Each app gets its own HTTPRoute with an explicit
+#    hostname so route ownership is clear and per-route policy is independent.
+# ─────────────────────────────────────────────────────────────────────────────
+apiVersion: gateway.networking.k8s.io/v1beta1
+kind: HTTPRoute
+metadata:
+  name: frontend-route
+  namespace: control-network-traffic
+spec:
+  parentRefs:
+    - name: api-gateway
+      namespace: control-network-traffic
+  # Explicit hostname — not a wildcard. One hostname per app.
+  hostnames:
+    - "api.demo.local"
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /
+      backendRefs:
+        - name: frontend
+          port: 8080
+      # Per-route timeout — overrides any gateway-level default.
+      # 10s is appropriate for the transactional frontend path.
+      # Reporting routes (Demo 06) use a longer value — set there, not here.
+      timeouts:
+        request: 10s
+        backendRequest: 8s
+
+---
+# ─────────────────────────────────────────────────────────────────────────────
+# 4. HTTPRoute — reporting service (Demo 06)
+#    Placeholder for the second app in the multi-app namespace demo.
+#    Demonstrates per-hostname isolation: separate cert, separate timeout
+#    policy, separate rate limit — all on the same Gateway process.
+#
+#    Timeout ladder for reporting (long-running queries):
+#      gateway request timeout = 90s, backend timeout = 80s.
+#      Notice this is set here on the reporting route and does NOT affect
+#      the frontend-route above — this is the core benefit of per-route policy.
+# ─────────────────────────────────────────────────────────────────────────────
+apiVersion: gateway.networking.k8s.io/v1beta1
+kind: HTTPRoute
+metadata:
+  name: reporting-route
+  namespace: control-network-traffic
+spec:
+  parentRefs:
+    - name: api-gateway
+      namespace: control-network-traffic
+  hostnames:
+    - "reporting.demo.local"
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /
+      backendRefs:
+        - name: reporting
+          port: 8080
+      # Relaxed timeout for long-running report queries.
+      # This does not affect the frontend-route timeout above.
+      timeouts:
+        request: 90s
+        backendRequest: 80s

@@ -1,0 +1,27 @@
+# reporting-service.yaml
+#
+# ClusterIP Service for the reporting stub (Demo 06).
+#
+# ClusterIP only — the reporting service is not exposed externally via a
+# Kubernetes Service. External access goes exclusively through the API Gateway
+# on the reporting.demo.local HTTPRoute. This prevents accidental bypass of
+# the gateway's TLS termination and rate limiting policies.
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: reporting
+  namespace: control-network-traffic
+  labels:
+    app.kubernetes.io/name: reporting
+spec:
+  selector:
+    app.kubernetes.io/name: reporting
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+      protocol: TCP
+  # ClusterIP (default) — no NodePort or LoadBalancer.
+  # External traffic reaches this service only via the API Gateway HTTPRoute.
+  type: ClusterIP

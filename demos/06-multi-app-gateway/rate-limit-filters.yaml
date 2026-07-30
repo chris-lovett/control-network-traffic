@@ -1,0 +1,78 @@
+# rate-limit-filters.yaml
+#
+# Per-route RateLimitFilters for Demo 06 — Multi-App Gateway.
+#
+# Each app on the shared gateway gets an independent rate limit budget.
+# This prevents the noisy-neighbor problem: a reporting burst cannot consume
+# the gateway's connection budget and degrade the transactional frontend.
+#
+# Budget rationale:
+#   frontend-route:  200 req/min — customer-facing transactional traffic,
+#                                  higher sustained rate expected
+#   reporting-route:  20 req/min — bursty analytics calls, lower frequency
+#                                  but potentially long-lived connections
+#
+# ANTI-PATTERN: a single aggregate gateway-level rate limit shared across
+# all routes. One app's burst hits the aggregate ceiling and the other app's
+# traffic gets dropped — even if that app is well within its own expected rate.
+# Per-route limits are not optional in a shared-gateway model.
+#
+# Apply with:
+#   kubectl apply -f demos/06-multi-app-gateway/rate-limit-filters.yaml
+#
+# NOTE: RateLimitFilter requires Consul Enterprise 1.16+ with the API Gateway
+# rate limiting feature enabled. The exact CRD name may vary by Consul version —
+# check `kubectl api-resources | grep ratelimit` on your cluster.
+
+---
+# Rate limit for the frontend (transactional) route
+apiVersion: consul.hashicorp.com/v1alpha1
+kind: RouteRetryFilter
+metadata:
+  name: frontend-ratelimit
+  namespace: control-network-traffic
+spec:
+  # Attach this filter to the frontend-route HTTPRoute
+  # by referencing it in the HTTPRoute's rules[].filters[] (shown below as
+  # an inline comment — apply via patch or edit the HTTPRoute directly).
+  #
+  # In consul-k8s >= 1.3, use the RateLimitHTTPRoute resource:
+  rateLimit:
+    requestsPerUnit: 200
+    unit: MINUTE
+  # Scope: per client IP. For internal-only routes, consider per-service-identity
+  # scoping instead of per-IP to avoid rate-limiting internal batch callers.
+
+---
+# Rate limit for the reporting route
+apiVersion: consul.hashicorp.com/v1alpha1
+kind: RouteRetryFilter
+metadata:
+  name: reporting-ratelimit
+  namespace: control-network-traffic
+spec:
+  rateLimit:
+    requestsPerUnit: 20
+    unit: MINUTE
+  # The reporting limit is intentionally low — analytics calls are expected to
+  # be infrequent but potentially long-lived. If you need to support batch
+  # reporting jobs, increase this value but keep it independent of the
+  # frontend-ratelimit above.
+
+---
+# HTTPRoute patch — attaches the rate limit filters to their respective routes.
+# This patches the existing frontend-route HTTPRoute to reference the filter.
+# Apply after the HTTPRoute from api-gateway.yaml is already in place.
+#
+# kubectl patch httproute frontend-route -n control-network-traffic \
+#   --type=json \
+#   -p='[{"op":"add","path":"/spec/rules/0/filters","value":[{"type":"ExtensionRef","extensionRef":{"group":"consul.hashicorp.com","kind":"RouteRetryFilter","name":"frontend-ratelimit"}}]}]'
+#
+# kubectl patch httproute reporting-route -n control-network-traffic \
+#   --type=json \
+#   -p='[{"op":"add","path":"/spec/rules/0/filters","value":[{"type":"ExtensionRef","extensionRef":{"group":"consul.hashicorp.com","kind":"RouteRetryFilter","name":"reporting-ratelimit"}}]}]'
+#
+# These patch commands are provided as comments rather than embedded in an
+# automated apply because the exact filter API surface varies between Consul
+# Enterprise versions. Verify the correct CRD name with:
+#   kubectl api-resources --api-group=consul.hashicorp.com | grep -i rate

@@ -1,0 +1,96 @@
+# intentions.yaml
+#
+# Explicit ServiceIntentions for the multi-app namespace (Demo 06).
+#
+# CRITICAL: Namespace co-location is NOT a trust boundary.
+# Previously, one-app-per-namespace meant the namespace boundary implied
+# isolation. With multiple apps sharing a namespace, that guarantee is gone.
+# Every service-to-service relationship must be explicitly permitted here.
+#
+# Intent graph for this demo:
+#
+#   api-gateway  → frontend   (ALLOW)   gateway serves the transactional app
+#   api-gateway  → reporting  (ALLOW)   gateway serves the reporting app
+#   frontend     → api        (ALLOW)   frontend calls the api middle tier
+#   api          → backend    (ALLOW)   api calls the leaf backend service
+#
+#   reporting    → backend    (implicit DENY — not in the graph)
+#   reporting    → api        (implicit DENY — not in the graph)
+#   frontend     → reporting  (implicit DENY — not in the graph)
+#
+# The implicit DENY for unlisted pairs is enforced by Consul's default-deny
+# intention model. These are documented here as comments so that the absence
+# of an intention is clearly intentional, not an oversight.
+#
+# ANTI-PATTERN: Do NOT replace the above with:
+#   Kind = "service-intentions"
+#   Name = "*"
+#   Sources = [{ Name = "*", Action = "allow" }]
+#
+# Wildcard intentions within the namespace feel convenient during migration
+# and become permanent. They silently remove all east-west security guarantees.
+# Define explicit pairs from day one.
+#
+# Apply with:
+#   kubectl apply -f demos/06-multi-app-gateway/intentions.yaml
+
+---
+# Allow: api-gateway → frontend
+apiVersion: consul.hashicorp.com/v1alpha1
+kind: ServiceIntentions
+metadata:
+  name: frontend-allow-gateway
+  namespace: control-network-traffic
+spec:
+  destination:
+    name: frontend
+  sources:
+    - name: api-gateway
+      action: allow
+
+---
+# Allow: api-gateway → reporting
+apiVersion: consul.hashicorp.com/v1alpha1
+kind: ServiceIntentions
+metadata:
+  name: reporting-allow-gateway
+  namespace: control-network-traffic
+spec:
+  destination:
+    name: reporting
+  sources:
+    - name: api-gateway
+      action: allow
+
+---
+# Allow: frontend → api
+apiVersion: consul.hashicorp.com/v1alpha1
+kind: ServiceIntentions
+metadata:
+  name: api-allow-frontend
+  namespace: control-network-traffic
+spec:
+  destination:
+    name: api
+  sources:
+    - name: frontend
+      action: allow
+
+---
+# Allow: api → backend
+apiVersion: consul.hashicorp.com/v1alpha1
+kind: ServiceIntentions
+metadata:
+  name: backend-allow-api
+  namespace: control-network-traffic
+spec:
+  destination:
+    name: backend
+  sources:
+    - name: api
+      action: allow
+    # Explicit deny for reporting attempting to reach backend cross-app.
+    # Consul's default-deny handles this implicitly, but making it explicit
+    # documents the decision and prevents accidental future additions.
+    - name: reporting
+      action: deny

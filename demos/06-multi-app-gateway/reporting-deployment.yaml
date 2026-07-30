@@ -1,0 +1,87 @@
+# reporting-deployment.yaml
+#
+# Stub "reporting" service for Demo 06 — Multi-App Gateway.
+#
+# This is a second application deployed into the same namespace as the
+# existing frontend/api/backend stack. It represents a read-only analytics
+# service with a different traffic profile (slow queries, bursty) and
+# demonstrates multi-app isolation on a shared Consul API Gateway.
+#
+# The reporting service reuses the backend container image — same binary,
+# different APP_NAME env var so responses identify as "reporting".
+# In a real deployment this would be a distinct image.
+#
+# connect-inject: "true" ensures Consul injects the Envoy sidecar so
+# this service participates in the mesh and is subject to intentions.
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: reporting
+  namespace: control-network-traffic
+  labels:
+    app.kubernetes.io/name: reporting
+    app.kubernetes.io/version: "v1"
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: reporting
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: reporting
+        app.kubernetes.io/version: "v1"
+        # Consul service mesh sidecar injection
+        consul.hashicorp.com/connect-inject: "true"
+      annotations:
+        # No upstream declarations — reporting is a leaf service in this demo.
+        # It does not call other services internally.
+        consul.hashicorp.com/connect-service: "reporting"
+    spec:
+      securityContext:
+        runAsNonRoot: true
+      containers:
+        - name: reporting
+          # Reuses the backend image — responds with APP_VERSION and service name.
+          image: ghcr.io/chris-lovett/control-network-traffic/backend:v1
+          imagePullPolicy: Always
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+          env:
+            - name: APP_VERSION
+              value: "v1"
+            - name: PORT
+              value: "8080"
+            # No chaos toggles — reporting is stable for this demo.
+            # FAILURE_RATE and DELAY_MS default to 0.
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 15
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 3
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: "50m"
+              memory: "64Mi"
+            limits:
+              cpu: "200m"
+              memory: "128Mi"
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+            seccompProfile:
+              type: RuntimeDefault
+      imagePullSecrets:
+        - name: ghcr-pull-secret
