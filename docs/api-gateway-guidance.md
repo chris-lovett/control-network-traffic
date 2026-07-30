@@ -93,49 +93,79 @@ independent route ownership, and a clean audit boundary. Path-based routing
 on a shared hostname couples all of these and creates ambiguity about which
 team owns which traffic.
 
-```yaml
-# Correct — one HTTPRoute per app, explicit hostname
-# frontend app
-hostnames: ["api.example.internal"]
-# reporting app
-hostnames: ["reporting.example.internal"]
+**Correct — one `HTTPRoute` per app, explicit hostname:**
 
-# Anti-pattern — shared hostname, path-based fan-out
-hostnames: ["*.example.internal"]   # ownership is ambiguous
-rules:
-  - matches: [{path: {value: /frontend}}]   # fragile, auditor-hostile
-  - matches: [{path: {value: /reporting}}]  # cert lifecycle is coupled
+```yaml
+# File: consul/config-entries/api-gateway.yaml
+# Each app gets its own HTTPRoute bound to a distinct hostname.
+# See the full resource in consul/config-entries/api-gateway.yaml.
+apiVersion: gateway.networking.k8s.io/v1beta1
+kind: HTTPRoute
+metadata:
+  name: api-route
+  namespace: control-network-traffic
+spec:
+  hostnames: ["api.example.internal"]       # transactional app
+  # ...
+---
+apiVersion: gateway.networking.k8s.io/v1beta1
+kind: HTTPRoute
+metadata:
+  name: reporting-route
+  namespace: control-network-traffic
+spec:
+  hostnames: ["reporting.example.internal"] # reporting app
+  # ...
 ```
 
-Hostname separation also means:
-- An auditor reviewing the `api.example.internal` listener config sees only
-  that app's policy — nothing bleeds across from the reporting app
-- A cert rotation event for one app is entirely isolated from the other
+Hostname separation means:
+- An auditor reviewing the `api.example.internal` listener sees only that
+  app's policy — nothing from the reporting app
+- A cert rotation event for one app is fully isolated from the other
 - RBAC on `HTTPRoute` objects maps cleanly to the team that owns the app
+
+**❌ Do not do this — shared hostname with path-based fan-out:**
+
+```yaml
+# ❌ DO NOT USE — path-based fan-out on a shared hostname
+# Route ownership is ambiguous. Cert lifecycle is coupled.
+# Auditors cannot assess one app's policy without reading the other's.
+spec:
+  hostnames: ["*.example.internal"]
+  rules:
+    - matches: [{path: {value: /frontend}}]
+    - matches: [{path: {value: /reporting}}]
+```
 
 ### Keep path matches narrow and explicit
 
 A `PathPrefix: /` catch-all serving multiple apps is a misrouting risk. When
 the match is ambiguous, Envoy's route evaluation order determines which app
-receives the request — a property that is invisible at the Gateway API level
-and easy to break with a config change.
+receives the request — a property invisible at the Gateway API level and easy
+to break with a config change.
+
+**Correct — narrow path prefix scoped to the owning service:**
 
 ```yaml
-# Correct — narrow prefix per resource
+# File: consul/config-entries/api-gateway.yaml
 rules:
   - matches:
       - path:
           type: PathPrefix
-          value: /api/v1/accounts    # explicit, owned by accounts team
+          value: /api/v1     # explicit; owned by the api team
+```
 
-# Anti-pattern — catch-all that fans out downstream
+**❌ Do not do this — catch-all that delegates routing downstream:**
+
+```yaml
+# ❌ DO NOT USE — gateway-level routing is bypassed entirely
+# Per-route policy (timeouts, rate limits) cannot be applied.
+# route_name in access logs is meaningless for attribution.
 rules:
   - matches:
       - path:
           type: PathPrefix
-          value: /                   # everything lands here; routing becomes
-                                     # an application-level concern, not a
-                                     # gateway-level one
+          value: /           # all traffic lands here regardless of destination
 ```
 
 ### Assign distinct listeners to distinct protocols
@@ -146,29 +176,40 @@ subtle framing bugs, complicates timeout configuration, and makes access log
 analysis harder.
 
 ```yaml
-listeners:
-  - name: https         # HTTP/1.1 and HTTP/2 transactional apps
-    protocol: HTTPS
-    port: 8443
-  - name: grpc          # gRPC internal services
-    protocol: HTTPS     # gRPC runs over HTTP/2; declare separately
-    port: 8444
-  - name: tcp-legacy    # raw TCP for any non-HTTP legacy integration
-    protocol: TCP
-    port: 9000
+# File: consul/config-entries/api-gateway.yaml — Gateway spec listeners field
+spec:
+  listeners:
+    - name: https         # HTTP/1.1 and HTTP/2 transactional apps
+      protocol: HTTPS
+      port: 8443
+    - name: grpc          # gRPC services — declare separately even though
+      protocol: HTTPS     # gRPC also uses HTTP/2; keeps policy independent
+      port: 8444
+    - name: tcp-legacy    # raw TCP for any non-HTTP legacy integration
+      protocol: TCP
+      port: 9000
 ```
 
 ### Restrict route binding to the local namespace
 
+Set `allowedRoutes` on the `Gateway` listener to prevent other namespaces
+from binding routes to your gateway without explicit permission.
+
 ```yaml
-allowedRoutes:
-  namespaces:
-    from: Same    # only HTTPRoutes in this namespace can bind
+# File: consul/config-entries/api-gateway.yaml — Gateway spec listeners field
+spec:
+  listeners:
+    - name: https
+      protocol: HTTPS
+      port: 8443
+      allowedRoutes:
+        namespaces:
+          from: Same    # only HTTPRoutes in this namespace can bind
 ```
 
-`from: All` or `from: Selector` without tight label matching allows other
-namespaces to bind routes to your gateway — a lateral privilege escalation
-vector. For cross-namespace references, use `ReferenceGrant` explicitly.
+`from: All` is the unsafe default — it allows any namespace to bind routes
+to your gateway. Use `ReferenceGrant` explicitly when cross-namespace binding
+is genuinely required.
 
 ---
 
@@ -179,40 +220,61 @@ vector. For cross-namespace references, use `ReferenceGrant` explicitly.
 Each app's cert lifecycle (issuance, rotation, revocation) must be independent
 even though the apps share a gateway process.
 
-```yaml
-# Correct — independent cert per hostname
-tls:
-  mode: Terminate
-  certificateRefs:
-    - name: api-tls-cert        # issued and rotated independently
-    - name: reporting-tls-cert  # no blast radius overlap
+**Correct — one `certificateRef` per hostname in `consul/config-entries/api-gateway.yaml`:**
 
-# Anti-pattern — one cert for all apps
-tls:
-  certificateRefs:
-    - name: shared-wildcard-cert   # one expiry or compromise event
-                                   # forces simultaneous rotation for
-                                   # every app on this gateway
+```yaml
+# File: consul/config-entries/api-gateway.yaml — Gateway spec listeners[].tls field
+spec:
+  listeners:
+    - name: https
+      protocol: HTTPS
+      port: 8443
+      tls:
+        mode: Terminate
+        certificateRefs:
+          - name: api-tls-cert        # VaultPKISecret for api.example.internal
+          - name: reporting-tls-cert  # VaultPKISecret for reporting.example.internal
+          # Each cert is issued and rotated independently via VSO —
+          # see the VaultPKISecret resource in the TLS section below.
 ```
 
-If an app handles sensitive transactions, its certificate compromise should
-not require a maintenance window for an unrelated reporting service on the
-same gateway. Coupled cert lifecycles make that separation impossible.
+**❌ Do not do this — single wildcard cert shared across all apps:**
+
+```yaml
+# ❌ DO NOT USE — one expiry or compromise event forces simultaneous
+# rotation across every app on this gateway.
+        tls:
+          certificateRefs:
+            - name: shared-wildcard-cert
+```
+
+If an app handles sensitive transactions, its certificate compromise must not
+require a maintenance window for an unrelated reporting service on the same
+gateway. Coupled cert lifecycles make that separation impossible.
 
 ### Enforce minimum TLS version and cipher policy
 
-```yaml
-# In the Consul API Gateway controller config or via GatewayTLSConfig
-tlsMinVersion: "TLSv1_2"   # TLS 1.3 preferred where client support allows
-tlsCipherSuites:
-  - TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384
-  - TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384
-  - TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256
-  # Explicitly absent: RC4, 3DES, NULL, EXPORT, anon suites
-```
+Set minimum TLS version and cipher suites on the `GatewayTLSConfig` resource
+in Consul Enterprise. Relying on defaults is not a sufficient control in
+environments subject to security audit.
 
-Weak cipher suites should be rejected explicitly. Relying on a default
-allowlist is not a sufficient control in environments subject to security audit.
+```yaml
+# File: consul/config-entries/api-gateway.yaml
+# GatewayTLSConfig is a Consul-specific resource applied alongside the Gateway.
+# Apply with: kubectl apply -f consul/config-entries/api-gateway.yaml
+apiVersion: consul.hashicorp.com/v1alpha1
+kind: GatewayTLSConfig
+metadata:
+  name: api-gateway-tls
+  namespace: control-network-traffic
+spec:
+  tlsMinVersion: "TLSv1_2"   # TLS 1.3 preferred where client support allows
+  tlsCipherSuites:
+    - TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384
+    - TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384
+    - TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256
+    # Explicitly absent: RC4, 3DES, NULL, EXPORT, anon suites
+```
 
 ### Use Vault Secrets Operator for certificate lifecycle on OpenShift
 
@@ -222,6 +284,8 @@ Secrets current from a Vault PKI backend — it handles issuance and automatic
 rotation without manual `vault` CLI steps.
 
 ```yaml
+# File: demos/05-api-gateway-ingress/frontend-vault-pki-secret.yaml
+# Apply with: kubectl apply -f demos/05-api-gateway-ingress/frontend-vault-pki-secret.yaml
 apiVersion: secrets.hashicorp.com/v1beta1
 kind: VaultPKISecret
 metadata:
@@ -234,7 +298,7 @@ spec:
   altNames:
     - api.example.internal
   destination:
-    name: api-tls-cert
+    name: api-tls-cert       # must match the certificateRef name in api-gateway.yaml
     create: true
     type: kubernetes.io/tls
   expiryOffset: 30d
@@ -273,32 +337,46 @@ With one app per namespace, the namespace boundary implicitly provided security
 isolation. With multiple apps per namespace, that guarantee is gone. Every
 service-to-service relationship must be explicitly permitted via intentions.
 
-```hcl
-# Correct — one intention per permitted service pair
-Kind   = "service-intentions"
-Name   = "backend"
-Sources = [
-  { Name = "api",         Action = "allow" },
-  { Name = "reporting",   Action = "deny"  }  # explicit denial documented
-]
+**Correct — one `ServiceIntentions` resource per destination, explicit pairs:**
 
-# Anti-pattern — wildcard "just for the migration"
-Kind   = "service-intentions"
-Name   = "*"
-Sources = [{ Name = "*", Action = "allow" }]
-# This shortcut is applied once and never cleaned up.
-# It silently removes all east-west security guarantees.
-# A compromised app in the namespace can reach every other service.
+```hcl
+# File: demos/06-multi-app-gateway/intentions.yaml
+# Apply with: kubectl apply -f demos/06-multi-app-gateway/intentions.yaml
+Kind = "service-intentions"
+Name = "backend"
+Sources = [
+  {
+    Name   = "api"
+    Action = "allow"    # api is permitted to call backend
+  },
+  {
+    # Explicit denial — reporting must not call backend directly.
+    # This is intentional, not an oversight.
+    Name   = "reporting"
+    Action = "deny"
+  }
+]
 ```
 
 **Define explicit pairs from day one.** The cost of setting up intentions
-correctly at the start is low. The cost of discovering during an audit — or
-an incident — that lateral movement was unrestricted is high.
+correctly at the start is low. The cost of discovering during an audit or
+incident that lateral movement was unrestricted is high.
 
-Document intentional absences in the config. If `reporting → backend` is
-absent from the intention graph, a comment should state that this is
-deliberate, not an oversight. See
+Document intentional absences. If `reporting → backend` is absent from the
+intention graph, a comment should state that this is deliberate. See the
+full working example:
 [`demos/06-multi-app-gateway/intentions.yaml`](../demos/06-multi-app-gateway/intentions.yaml).
+
+**❌ Do not do this — wildcard intentions applied "just for the migration":**
+
+```hcl
+# ❌ DO NOT USE — applied once, never cleaned up
+# Every service in the namespace can reach every other service.
+# A compromised app has unrestricted lateral movement.
+Kind   = "service-intentions"
+Name   = "*"
+Sources = [{ Name = "*", Action = "allow" }]
+```
 
 ---
 
@@ -336,28 +414,45 @@ default will be wrong for at least one app in the namespace.
 
 ### Retry policy — idempotency is a hard requirement
 
-Retries must be **opt-in per route**, not a gateway-wide default. The reason
-is not just performance — on mutation endpoints, retry amplification creates
-duplicate operations. A payment POST retried twice is not a performance
-problem, it is a data integrity problem.
+Retries must be **opt-in per route**, not a gateway-wide default. On mutation
+endpoints, retry amplification creates duplicate operations. A payment POST
+retried twice is not a performance problem — it is a data integrity problem.
+
+**Correct — `RouteRetryFilter` scoped only to idempotent routes:**
 
 ```yaml
-# Safe — retries scoped to read-only routes only
-retries:
+# File: demos/06-multi-app-gateway/rate-limit-filters.yaml
+# Only attach this filter to routes where ALL operations are idempotent (GET, HEAD).
+# Never attach to routes accepting POST, PUT, PATCH, or DELETE.
+apiVersion: consul.hashicorp.com/v1alpha1
+kind: RouteRetryFilter
+metadata:
+  name: reporting-retry
+  namespace: control-network-traffic
+spec:
   numRetries: 2
-  retryOn: ["5xx", "reset", "connect-failure"]
-  # Applied only to routes backed by idempotent operations (GET, HEAD)
-  # Never apply to routes that accept POST, PUT, PATCH, DELETE
-
-# Anti-pattern — blanket retry policy at the gateway level
-# Any global retry config that applies to all routes will eventually
-# retry a non-idempotent mutation. The failure mode is silent duplication,
-# not an error — making it significantly harder to detect than a hard failure.
+  retryOn:
+    - "5xx"
+    - "reset"
+    - "connect-failure"
 ```
 
-The classification of routes as idempotent or non-idempotent should be
-documented in the `HTTPRoute` metadata or in a comment in the config file.
-Do not rely on tribal knowledge for this distinction.
+The classification of each route as idempotent or non-idempotent must be
+documented in a comment in the config file. Do not rely on tribal knowledge.
+
+**❌ Do not do this — blanket retry policy via `ServiceDefaults` wildcard:**
+
+```hcl
+# ❌ DO NOT USE — wildcard applies to every upstream including payment services
+# Silent duplicate transactions are the failure mode, not a visible error.
+Kind = "service-defaults"
+Name = "*"
+UpstreamConfig {
+  Defaults {
+    Limits { MaxRetries = 3 }
+  }
+}
+```
 
 ### Circuit breaking — per upstream, not per gateway
 
@@ -366,9 +461,11 @@ that one app's upstream failure exhausts only that app's connection budget —
 not the shared Envoy resources of the gateway, which would degrade all apps.
 
 ```hcl
-# service-defaults for each upstream independently
+# File: consul/config-entries/service-defaults-backend.yaml
+# Apply with: consul config write consul/config-entries/service-defaults-backend.yaml
+# Repeat this resource for each upstream service — do not use Name = "*"
 Kind     = "service-defaults"
-Name     = "backend"        # repeated for each upstream service
+Name     = "backend"
 Protocol = "http"
 
 UpstreamConfig {
@@ -383,32 +480,76 @@ UpstreamConfig {
 }
 ```
 
-Tune `MaxFailures` and `BaseEjectionTime` per service based on the service's
-observed error budget. A low-tolerance auth service should eject faster than
-a batch reporting service where occasional 5xx is expected.
+Tune `MaxFailures` and `BaseEjectionTime` per service based on observed error
+budget. A low-tolerance auth service should eject faster than a batch reporting
+service where occasional 5xx is expected. See the working example in
+[`consul/config-entries/service-defaults-backend.yaml`](../consul/config-entries/service-defaults-backend.yaml).
 
 ### Health checking strategy
 
-Use **passive health checking (outlier detection)** as the primary mechanism
-for services with variable error rates. Active health checks (periodic probes)
-are appropriate for detecting cold failures, but they do not reflect the
-request-level quality that outlier detection observes.
+Consul configures passive health checking (outlier detection) via the
+`PassiveHealthCheck` block in `ServiceDefaults` (shown above). Use this as
+the **primary mechanism** for services with variable error rates — it reflects
+actual request outcomes, not synthetic probe results.
 
-For services known to have flappy health states — notification dispatch, async
-job runners, external integration adapters — passive health checking prevents
-premature ejection while still catching genuine sustained failures.
+Active health checks (periodic probes via `consul.hashicorp.com/connect-service`
+readiness probes on the pod) are appropriate for detecting cold start failures
+but do not reflect per-request quality. Use both together: active checks detect
+a pod that is not ready, passive checks detect a pod that is returning errors.
+
+For services with flappy health states (notification dispatch, async job
+runners, external integration adapters) increase `Interval` and `MaxFailures`
+to prevent premature ejection while still catching genuine sustained failures:
+
+```hcl
+# File: consul/config-entries/service-defaults-<service-name>.yaml
+# Tolerant settings for a service with expected transient errors
+Kind     = "service-defaults"
+Name     = "notification-service"
+Protocol = "http"
+
+UpstreamConfig {
+  Defaults {
+    PassiveHealthCheck {
+      Interval           = "30s"   # evaluate less frequently
+      MaxFailures        = 10      # tolerate more transient errors before ejecting
+      MaxEjectionPercent = 50      # never eject more than half the pool
+      BaseEjectionTime   = "60s"
+    }
+  }
+}
+```
 
 ### Connection pool tuning by workload type
 
-Connection pool limits prevent a single upstream from monopolising the
-gateway's Envoy thread resources. Tune these per workload, not globally.
+Connection pool limits are set in `ServiceDefaults` under
+`UpstreamConfig.Defaults.Limits`. Tune per service — not globally via a
+wildcard `ServiceDefaults` — to prevent one app's upstream from monopolising
+the gateway's Envoy thread resources.
 
-| Workload type | `maxConnections` | `maxPendingRequests` | `maxRequests` | Rationale |
+| Workload type | `MaxConnections` | `MaxPendingRequests` | `MaxRequests` | Rationale |
 |---------------|------------------|----------------------|---------------|-----------|
 | Auth / identity | Low (50–100) | Low | Low | Short-lived, high-frequency; connection reuse is high |
 | Transactional API | Medium (200–500) | Medium | Medium | Moderate concurrency, latency-sensitive |
 | Reporting / analytics | High (500–1000) | High | High | Long-lived connections, high payload, bursty |
 | Notification / async | Medium | High | Medium | High concurrency, fire-and-forget |
+
+```hcl
+# File: consul/config-entries/service-defaults-<service-name>.yaml
+Kind     = "service-defaults"
+Name     = "reporting-backend"
+Protocol = "http"
+
+UpstreamConfig {
+  Defaults {
+    Limits {
+      MaxConnections    = 800
+      MaxPendingRequests = 400
+      MaxRequests       = 800
+    }
+  }
+}
+```
 
 ---
 
@@ -418,71 +559,128 @@ Apply rate limits at the route level — not as an aggregate gateway-level limit
 An aggregate limit is shared across all apps; one app's burst exhausts the
 entire budget and forces 429s onto its neighbors.
 
+**Correct — independent `RouteRetryFilter` per `HTTPRoute`**
+
+Each route gets its own rate limit budget. A reporting burst hits the
+reporting ceiling; the transactional route's budget is unaffected.
+
 ```yaml
-# Correct — independent budget per route
-# Transactional route: customer-facing, sustained rate
-frontend-route:   200 req/min
+# File: demos/06-multi-app-gateway/rate-limit-filters.yaml
+# Apply with: kubectl apply -f demos/06-multi-app-gateway/rate-limit-filters.yaml
 
-# Reporting route: lower frequency, bursty
-reporting-route:  20 req/min
+# Transactional route — higher sustained rate, customer-facing
+apiVersion: consul.hashicorp.com/v1alpha1
+kind: RouteRetryFilter
+metadata:
+  name: api-ratelimit
+  namespace: control-network-traffic
+spec:
+  rateLimit:
+    requestsPerUnit: 400
+    unit: MINUTE
+---
+# Reporting route — lower frequency, bursty; capped independently
+apiVersion: consul.hashicorp.com/v1alpha1
+kind: RouteRetryFilter
+metadata:
+  name: reporting-ratelimit
+  namespace: control-network-traffic
+spec:
+  rateLimit:
+    requestsPerUnit: 50
+    unit: MINUTE
+```
 
-# Anti-pattern — aggregate gateway limit shared across all routes
-gateway-level: 220 req/min
-# A reporting burst of 25 req/min would consume the entire budget,
-# leaving only 195 req/min for the transactional app —
-# below its normal operating rate.
+Each `RouteRetryFilter` is then referenced from the `filters` field of the
+corresponding `HTTPRoute` rule. See
+[`demos/06-multi-app-gateway/rate-limit-filters.yaml`](../demos/06-multi-app-gateway/rate-limit-filters.yaml)
+for the full working example including the `kubectl patch` commands to attach
+filters to existing routes.
+
+**Do not do this — aggregate gateway-level limit shared across all routes:**
+
+```yaml
+# ❌ DO NOT USE — one budget shared across all routes
+# If reporting fires 450 req/min against a 500 req/min gateway limit,
+# only 50 req/min remains for all transactional routes.
+# The transactional app receives 429s. The reporting job does not.
+apiVersion: consul.hashicorp.com/v1alpha1
+kind: RouteRetryFilter
+metadata:
+  name: gateway-ratelimit   # attached to Gateway, not to individual HTTPRoutes
+spec:
+  rateLimit:
+    requestsPerUnit: 500
+    unit: MINUTE
 ```
 
 Additional rate limiting considerations:
 
-- **Scope limits by client identity, not just by source IP**, where the
-  gateway can identify the caller. IP-based limits are ineffective when
-  internal batch jobs or service accounts share an egress IP.
+- **Scope limits by client identity, not just by source IP.** IP-based limits
+  are ineffective when internal batch jobs or service accounts share an egress
+  IP. Use service identity (mTLS principal) where available.
 - **Apply different limits for read vs. write operations** on the same route
   if the downstream service has asymmetric capacity for reads and writes.
 - **Do not apply CORS `allowOrigins: ["*"]`** on any listener serving
-  sensitive APIs. Configure explicit origin allowlists.
+  sensitive APIs. Configure explicit origin allowlists per route.
 
 ---
 
 ## Header policy
 
+Both header filters below are added to the `filters` field of an `HTTPRoute`
+rule, inside `consul/config-entries/api-gateway.yaml`.
+
 ### Strip internal headers before external responses
 
 Internal tracing and routing headers must not be forwarded to external clients.
+Add a `ResponseHeaderModifier` filter to each `HTTPRoute` that handles
+external-facing traffic.
 
 ```yaml
-# Add a response header filter to strip internal headers
-filters:
-  - type: ResponseHeaderModifier
-    responseHeaderModifier:
-      remove:
-        - x-envoy-upstream-service-time
-        - x-request-id           # internal correlation ID
-        - x-b3-traceid           # internal tracing header
-        - x-b3-spanid
-        - x-b3-parentspanid
-        - x-b3-sampled
-        - x-b3-flags
+# File: consul/config-entries/api-gateway.yaml — inside HTTPRoute spec.rules[]
+rules:
+  - matches:
+      - path:
+          type: PathPrefix
+          value: /api/v1
+    backendRefs:
+      - name: frontend
+        port: 8080
+    filters:
+      - type: ResponseHeaderModifier
+        responseHeaderModifier:
+          remove:
+            - x-envoy-upstream-service-time
+            - x-request-id        # internal correlation ID — do not expose externally
+            - x-b3-traceid        # Zipkin tracing header
+            - x-b3-spanid
+            - x-b3-parentspanid
+            - x-b3-sampled
+            - x-b3-flags
 ```
 
 ### Inject tracing headers at the gateway
 
-The gateway is the first mesh-aware hop for external traffic. Inject W3C
-`traceparent` headers here so that every downstream service in the call chain
-participates in distributed tracing from the point of ingress.
+The gateway is the first mesh-aware hop for external traffic. Inject a W3C
+`traceparent` header on the request so every downstream service in the call
+chain can participate in distributed tracing from the point of ingress.
 
 ```yaml
-filters:
-  - type: RequestHeaderModifier
-    requestHeaderModifier:
-      add:
-        - name: traceparent
-          value: "%REQ(traceparent)%"  # preserve if already set; inject if absent
+# File: consul/config-entries/api-gateway.yaml — inside HTTPRoute spec.rules[]
+# Add alongside the ResponseHeaderModifier above on the same route rule.
+    filters:
+      - type: RequestHeaderModifier
+        requestHeaderModifier:
+          set:
+            # set (not add): preserve an existing traceparent if the caller
+            # already provided one; inject a new one if absent.
+            - name: traceparent
+              value: "%REQ(traceparent)%"
 ```
 
-The gateway must not be a tracing black hole. A request that enters the mesh
-without a `traceparent` header cannot be correlated across services downstream.
+A request that enters the mesh without a `traceparent` header cannot be
+correlated across services downstream. Do not skip this on any route.
 
 ---
 
@@ -493,50 +691,78 @@ for free in the 1:1 model. Rebuild it explicitly.
 
 ### Envoy stats tags — tag by route and upstream, not just gateway instance
 
-```yaml
-# In Consul proxy-defaults or gateway config
-config:
-  envoy_stats_tags:
-    - tag_name: consul_source_service
-    - tag_name: consul_destination_service
-    - tag_name: consul_destination_namespace
-    - tag_name: consul_routing_cluster
-```
+Stats tags are set in the `config` block of a `ProxyDefaults` config entry.
+Without them, a spike in gateway latency is unattributable across the N apps
+sharing the namespace.
 
-Without these tags, a spike in gateway latency is unattributable — you cannot
-tell which of the N apps in the namespace is responsible.
+```hcl
+# File: consul/config-entries/proxy-defaults.yaml
+# Apply with: consul config write consul/config-entries/proxy-defaults.yaml
+Kind = "proxy-defaults"
+Name = "global"
 
-### Structured JSON access logs — minimum required fields
-
-```
-{
-  "method":            "%REQ(:METHOD)%",
-  "path":              "%REQ(X-ENVOY-ORIGINAL-PATH?:PATH)%",
-  "response_code":     "%RESPONSE_CODE%",
-  "duration_ms":       "%DURATION%",
-  "upstream_cluster":  "%UPSTREAM_CLUSTER%",
-  "upstream_host":     "%UPSTREAM_HOST%",
-  "route_name":        "%ROUTE_NAME%",
-  "bytes_sent":        "%BYTES_SENT%",
-  "bytes_received":    "%BYTES_RECEIVED%",
-  "request_id":        "%REQ(X-REQUEST-ID)%",
-  "user_agent":        "%REQ(USER-AGENT)%",
-  "forwarded_for":     "%REQ(X-FORWARDED-FOR)%"
+Config {
+  envoy_stats_tags = [
+    "consul_source_service",
+    "consul_destination_service",
+    "consul_destination_namespace",
+    "consul_routing_cluster"
+  ]
 }
 ```
 
-`route_name` and `upstream_cluster` are the two fields that restore per-app
+### Structured JSON access logs — minimum required fields
+
+Access log format is configured in the `config` block of `ProxyDefaults`
+alongside stats tags, or in the Consul API Gateway controller Helm values.
+The format below uses Envoy command operators.
+
+```hcl
+# File: consul/config-entries/proxy-defaults.yaml — add to the Config block
+Config {
+  # ... stats tags above ...
+  envoy_gateway_stats_prefix = "api_gateway"
+  envoy_tracing_json = "{ ... }"   # optional — configure your tracing provider
+
+  # Access log format — structured JSON with per-app attribution fields
+  envoy_extra_static_clusters_json = ""   # placeholder if needed
+}
+```
+
+Minimum required fields in the access log JSON template:
+
+| Field | Envoy operator | Purpose |
+|-------|---------------|---------|
+| `method` | `%REQ(:METHOD)%` | HTTP verb |
+| `path` | `%REQ(X-ENVOY-ORIGINAL-PATH?:PATH)%` | Request path |
+| `response_code` | `%RESPONSE_CODE%` | HTTP status returned to client |
+| `duration_ms` | `%DURATION%` | Total request duration |
+| `upstream_cluster` | `%UPSTREAM_CLUSTER%` | **Identifies which app handled the request** |
+| `route_name` | `%ROUTE_NAME%` | **Identifies which HTTPRoute matched** |
+| `upstream_host` | `%UPSTREAM_HOST%` | Specific pod that handled the request |
+| `bytes_sent` | `%BYTES_SENT%` | Response payload size |
+| `bytes_received` | `%BYTES_RECEIVED%` | Request payload size |
+| `request_id` | `%REQ(X-REQUEST-ID)%` | Correlation ID for incident investigation |
+| `forwarded_for` | `%REQ(X-FORWARDED-FOR)%` | Original client IP for audit trail |
+| `user_agent` | `%REQ(USER-AGENT)%` | Caller identification |
+
+`upstream_cluster` and `route_name` are the two fields that restore per-app
 visibility on a shared gateway. Every alert, dashboard, and runbook should
 filter on these fields first.
 
 `request_id` and `forwarded_for` are required for incident investigation and
-audit trail purposes on any route handling sensitive operations.
+audit trail on any route handling sensitive operations.
 
 ### Distributed tracing
 
-Inject tracing headers at ingress (see Header policy above) and verify that
-all upstream services propagate them. A broken propagation chain at any hop
-produces incomplete traces that are useless for root cause analysis.
+Tracing header injection is configured in the `RequestHeaderModifier` filter
+on each `HTTPRoute` (see [Header policy](#header-policy) above). Verify
+end-to-end propagation by confirming that every upstream service reads and
+forwards the `traceparent` header on outbound calls.
+
+A broken propagation chain at any single hop produces incomplete traces. The
+symptom is a trace that appears to terminate at the service that dropped the
+header — the downstream call chain is invisible.
 
 ---
 
