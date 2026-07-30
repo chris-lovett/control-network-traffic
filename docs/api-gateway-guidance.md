@@ -9,11 +9,13 @@ shared, multi-app namespace. For runnable examples see
 
 ## Contents
 
-**Orientation**
+### [Orientation](#orientation)
+*Read first — architectural context and quick navigation.*
 - [The architectural shift](#the-architectural-shift)
 - [Quick reference — concern to config](#quick-reference--concern-to-config)
 
-**Tuning principles** ← read when building or reviewing a gateway configuration
+### [Tuning principles](#tuning-principles)
+*Read when building or reviewing a gateway configuration.*
 - [Routing design](#routing-design)
 - [TLS policy](#tls-policy)
 - [Service intentions — namespace ≠ trust boundary](#service-intentions--namespace--trust-boundary)
@@ -25,7 +27,8 @@ shared, multi-app namespace. For runnable examples see
 - [Config ownership](#config-ownership)
 - [Namespace grouping criteria](#namespace-grouping-criteria)
 
-**Anti-patterns** ← read when reviewing a PR or troubleshooting a live issue
+### [Anti-patterns](#anti-patterns)
+*Read when reviewing a PR or troubleshooting a live issue.*
 - [Anti-pattern index](#anti-pattern-index)
 - [1 — Wildcard intentions](#1--wildcard-intentions-just-for-the-migration)
 - [2 — Single catch-all route](#2--single-catch-all-route-serving-multiple-apps)
@@ -41,7 +44,9 @@ shared, multi-app namespace. For runnable examples see
 
 ---
 
-## The architectural shift
+## Orientation
+
+### The architectural shift
 
 ```
 Before:  1 namespace → 1 app → 1 gateway   (isolation was free)
@@ -64,7 +69,7 @@ Every tuning decision in this document maps to one of four concerns:
 
 ---
 
-## Quick reference — concern to config
+### Quick reference — concern to config
 
 Jump directly to the section and Consul resource that addresses each concern.
 
@@ -84,7 +89,9 @@ Jump directly to the section and Consul resource that addresses each concern.
 
 ---
 
-## Routing design
+## Tuning principles
+
+### Routing design
 
 ### Use hostname-based separation, not path-based fan-out
 
@@ -213,7 +220,7 @@ is genuinely required.
 
 ---
 
-## TLS policy
+### TLS policy
 
 ### Per-hostname SNI certificates — never a shared cert
 
@@ -329,7 +336,7 @@ policy from a neighboring app simply because they share a gateway.
 
 ---
 
-## Service intentions — namespace ≠ trust boundary
+### Service intentions — namespace ≠ trust boundary
 
 This is the most operationally significant change in the shared-gateway model.
 
@@ -380,7 +387,7 @@ Sources = [{ Name = "*", Action = "allow" }]
 
 ---
 
-## Per-route resilience
+### Per-route resilience
 
 ### Timeout ladder
 
@@ -553,7 +560,7 @@ UpstreamConfig {
 
 ---
 
-## Per-route rate limiting
+### Per-route rate limiting
 
 Apply rate limits at the route level — not as an aggregate gateway-level limit.
 An aggregate limit is shared across all apps; one app's burst exhausts the
@@ -626,7 +633,7 @@ Additional rate limiting considerations:
 
 ---
 
-## Header policy
+### Header policy
 
 Both header filters below are added to the `filters` field of an `HTTPRoute`
 rule, inside `consul/config-entries/api-gateway.yaml`.
@@ -684,7 +691,7 @@ correlated across services downstream. Do not skip this on any route.
 
 ---
 
-## Observability
+### Observability
 
 The shared gateway model loses per-app observability granularity that existed
 for free in the 1:1 model. Rebuild it explicitly.
@@ -766,7 +773,7 @@ header — the downstream call chain is invisible.
 
 ---
 
-## Sizing and scaling
+### Sizing and scaling
 
 With multiple apps per namespace, the gateway cannot be sized off any single
 app's historical baseline.
@@ -833,7 +840,7 @@ namespace simultaneously.
 
 ---
 
-## Config ownership
+### Config ownership
 
 Multiple app teams now write config into the same namespace. Without explicit
 ownership conventions, teams collide on shared resources and config provenance
@@ -875,7 +882,7 @@ demos/06-multi-app-gateway/reporting-*.yaml     @reporting-team
 
 ---
 
-## Namespace grouping criteria
+### Namespace grouping criteria
 
 Not all apps belong in the same namespace. Grouping by business domain alone
 is insufficient — the gateway enforces a shared operational and security
