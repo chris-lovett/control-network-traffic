@@ -619,132 +619,616 @@ requirement? If not, reconsider the grouping.
 
 ## Anti-patterns
 
+Each entry follows the same structure: what the anti-pattern looks like in
+config, what breaks, and the specific Consul resource or configuration that
+corrects it.
+
+---
+
 ### 1 — Wildcard intentions "just for the migration"
 
+**What it looks like:**
+
 ```hcl
-# This gets applied once and never cleaned up
+# ServiceIntentions applied namespace-wide during migration
+Kind = "service-intentions"
+Name = "*"
 Sources = [{ Name = "*", Action = "allow" }]
 ```
 
-This is the most common migration shortcut. It feels temporary. It is
-permanent. It silently removes all east-west security guarantees in the
-namespace — a compromised app can reach every other service without
-restriction. Define explicit pairs from day one.
+**What breaks:** Every service in the namespace can reach every other service
+unconditionally. A compromised or misconfigured app has unrestricted lateral
+movement. This config is applied once, never revisited, and survives long after
+the migration is complete.
+
+**Correct pattern:** One `ServiceIntentions` resource per destination service,
+with explicit source entries for each permitted caller. Absent pairs are denied
+by Consul's default-deny model — document them as deliberate in a comment.
+
+```hcl
+# consul/config-entries/intentions.yaml
+Kind = "service-intentions"
+Name = "backend"
+Sources = [
+  {
+    Name   = "api"
+    Action = "allow"
+  },
+  {
+    # Explicit denial — reporting is not permitted to call backend directly.
+    # Cross-app calls must go through the api service.
+    Name   = "reporting"
+    Action = "deny"
+  }
+]
+```
+
+Reference: [`demos/06-multi-app-gateway/intentions.yaml`](../demos/06-multi-app-gateway/intentions.yaml)
+| [Consul ServiceIntentions config entry](https://developer.hashicorp.com/consul/docs/connect/config-entries/service-intentions)
 
 ---
 
 ### 2 — Single catch-all route serving multiple apps
 
+**What it looks like:**
+
 ```yaml
-# One route, all apps behind it
-rules:
-  - matches:
-      - path: {type: PathPrefix, value: /}
-    backendRefs:
-      - name: router-service   # routes internally by inspecting the request
+# One HTTPRoute, one backend — all apps behind a shared dispatcher
+apiVersion: gateway.networking.k8s.io/v1beta1
+kind: HTTPRoute
+metadata:
+  name: catch-all
+spec:
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /        # matches everything
+      backendRefs:
+        - name: router-service
+          port: 8080        # this service inspects the path and re-routes internally
 ```
 
-The gateway's role is to route requests — delegating that decision to a
-downstream service removes L7 policy, observability, and rate limiting from
-the gateway layer entirely. Route ownership becomes invisible and misconfigured
-intentions cannot be caught at the gateway boundary.
+**What breaks:** Per-route policy (timeouts, retries, rate limits) cannot be
+applied at the gateway — it all inherits from the single route. `route_name`
+in access logs is meaningless for attribution. Intentions cannot be enforced
+per-app at the gateway boundary. One misconfigured backend takes all traffic
+with it.
+
+**Correct pattern:** One `HTTPRoute` per app, bound to an explicit hostname.
+Per-route timeouts, retry policy, and rate limit filters then apply
+independently to each app.
+
+```yaml
+# HTTPRoute for the transactional app
+apiVersion: gateway.networking.k8s.io/v1beta1
+kind: HTTPRoute
+metadata:
+  name: api-route
+spec:
+  hostnames: ["api.example.internal"]
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /api/v1
+      backendRefs:
+        - name: frontend
+          port: 8080
+      timeouts:
+        request: 10s
+        backendRequest: 8s
+---
+# HTTPRoute for the reporting app — independent timeout, independent rate limit
+apiVersion: gateway.networking.k8s.io/v1beta1
+kind: HTTPRoute
+metadata:
+  name: reporting-route
+spec:
+  hostnames: ["reporting.example.internal"]
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /reports
+      backendRefs:
+        - name: reporting
+          port: 8080
+      timeouts:
+        request: 90s
+        backendRequest: 80s
+```
+
+Reference: [`consul/config-entries/api-gateway.yaml`](../consul/config-entries/api-gateway.yaml)
+| [Consul HTTPRoute configuration](https://developer.hashicorp.com/consul/docs/north-south/api-gateway)
 
 ---
 
 ### 3 — Shared TLS certificate across unrelated apps
 
-A single certificate shared between apps couples their rotation and revocation
-events. A cert rotation that requires OCSP stapling update, or a revocation
-triggered by a security incident on one app, forces a simultaneous change for
-every app sharing that cert. On a shared gateway serving multiple teams, this
-becomes a coordination problem with every cert event.
+**What it looks like:**
+
+```yaml
+# Single certificateRef for all apps on the gateway
+tls:
+  mode: Terminate
+  certificateRefs:
+    - name: shared-wildcard-cert   # *.example.internal covers all apps
+```
+
+**What breaks:** Any cert lifecycle event — rotation, revocation, expiry,
+OCSP stapling update — forces a simultaneous change across every app sharing
+that cert. A security incident requiring emergency revocation on one app
+becomes a coordinated multi-team maintenance window.
+
+**Correct pattern:** One `VaultPKISecret` and one `certificateRef` per
+hostname. Each app's cert is issued, rotated, and revoked independently via
+the Vault Secrets Operator.
+
+```yaml
+# Gateway listener — per-hostname certificateRefs
+tls:
+  mode: Terminate
+  certificateRefs:
+    - name: api-tls-cert          # VaultPKISecret for api.example.internal
+    - name: reporting-tls-cert    # VaultPKISecret for reporting.example.internal
+---
+# VaultPKISecret for each hostname — independent TTL and rotation schedule
+apiVersion: secrets.hashicorp.com/v1beta1
+kind: VaultPKISecret
+metadata:
+  name: api-tls-cert
+  namespace: control-network-traffic
+spec:
+  mount: pki
+  role: <your-pki-role>
+  commonName: api.example.internal
+  destination:
+    name: api-tls-cert
+    create: true
+    type: kubernetes.io/tls
+  ttl: 90d
+  expiryOffset: 30d    # VSO renews 30 days before expiry, no gateway restart needed
+```
+
+Reference: [Vault Secrets Operator — VaultPKISecret](https://developer.hashicorp.com/vault/docs/platform/k8s/vso/api-reference#vaultpkisecret)
+| [Demo 05 Step 1](../demos/05-api-gateway-ingress/README.md)
 
 ---
 
 ### 4 — Blanket timeout/retry policy applied gateway-wide
 
-A global timeout set to satisfy the most tolerant app (reporting, 90s) causes
-clients for the tightest SLA app (auth, 2s) to wait 45x longer than acceptable
-before receiving an error. A global retry policy that satisfies the most
-resilient app will retry mutations on every other app. Neither can be correct
-simultaneously for all apps. Set per route.
+**What it looks like:**
+
+```yaml
+# ProxyDefaults sets a global request timeout inherited by all routes
+Kind = "proxy-defaults"
+Name = "global"
+Config {
+  local_request_timeout_ms = 30000   # 30s for everything — satisfies reporting,
+                                     # but auth and transactions should be 2–10s
+}
+```
+
+```yaml
+# Global retry policy in service-defaults — applies to every upstream
+Kind = "service-defaults"
+Name = "*"              # wildcard — all services
+UpstreamConfig {
+  Defaults {
+    Limits { MaxRetries = 3 }   # retries POST /payments 3 times on 5xx
+  }
+}
+```
+
+**What breaks:** A 30s global timeout means auth failures are invisible for
+30 seconds before the client sees an error. A global retry policy on a
+wildcard `service-defaults` retries `POST /payments` on every 5xx — producing
+silent duplicate transactions.
+
+**Correct pattern:** Set `timeouts` on each `HTTPRoute` individually. Scope
+retry config to specific upstreams via named (not wildcard) `ServiceDefaults`,
+and only on services where all operations are idempotent.
+
+```yaml
+# Per-route timeout on the HTTPRoute — not in proxy-defaults
+rules:
+  - timeouts:
+      request: 5s            # auth route: fail fast
+      backendRequest: 4s
+
+# Per-upstream retry in ServiceDefaults — named, not wildcard
+Kind = "service-defaults"
+Name = "reporting-backend"   # explicit service name, not "*"
+Protocol = "http"
+UpstreamConfig {
+  Defaults {
+    Limits { MaxRetries = 2 }   # safe: reporting endpoints are all GET
+  }
+}
+# No retry config on payment-service ServiceDefaults — absence is intentional
+```
+
+Reference: [Consul ServiceDefaults — UpstreamConfig](https://developer.hashicorp.com/consul/docs/connect/config-entries/service-defaults)
+| [Consul ProxyDefaults](https://developer.hashicorp.com/consul/docs/connect/config-entries/proxy-defaults)
 
 ---
 
 ### 5 — Aggregate-only rate limiting
 
-A single gateway-level rate limit shared across all routes allows any one app
-to consume the entire budget. The failure mode is not that the misbehaving app
-gets rate-limited — it is that the well-behaved apps get 429s instead. The
-noisy neighbor degrades silently while the visible symptom falls on its
-neighbors.
+**What it looks like:**
+
+```yaml
+# One RateLimitFilter attached to the Gateway — shared across all routes
+apiVersion: consul.hashicorp.com/v1alpha1
+kind: RouteRetryFilter
+metadata:
+  name: gateway-ratelimit
+spec:
+  rateLimit:
+    requestsPerUnit: 500
+    unit: MINUTE
+# Applied to the Gateway, not to individual HTTPRoutes
+```
+
+**What breaks:** The 500 req/min budget is shared. A reporting batch job
+that fires 450 req/min consumes 90% of the budget, leaving 50 req/min for
+all transactional routes — well below their normal operating rate. The
+transactional app gets 429s. The reporting job does not.
+
+**Correct pattern:** Attach a `RouteRetryFilter` (or equivalent rate limit
+filter) to each `HTTPRoute` independently with a budget appropriate to that
+route's traffic profile.
+
+```yaml
+# Per-route rate limit on the transactional HTTPRoute
+apiVersion: consul.hashicorp.com/v1alpha1
+kind: RouteRetryFilter
+metadata:
+  name: api-ratelimit
+  namespace: control-network-traffic
+spec:
+  rateLimit:
+    requestsPerUnit: 400    # transactional: higher sustained rate
+    unit: MINUTE
+---
+# Per-route rate limit on the reporting HTTPRoute
+apiVersion: consul.hashicorp.com/v1alpha1
+kind: RouteRetryFilter
+metadata:
+  name: reporting-ratelimit
+  namespace: control-network-traffic
+spec:
+  rateLimit:
+    requestsPerUnit: 50     # reporting: lower frequency, bursty — capped independently
+    unit: MINUTE
+```
+
+Reference: [`demos/06-multi-app-gateway/rate-limit-filters.yaml`](../demos/06-multi-app-gateway/rate-limit-filters.yaml)
+| [Consul API Gateway — Route filters](https://developer.hashicorp.com/consul/docs/north-south/api-gateway)
 
 ---
 
 ### 6 — Using the API Gateway for east-west traffic
 
-The API Gateway is a north-south ingress device. Internal service-to-service
-calls between apps in the namespace must flow through the service mesh via
-sidecar proxies governed by intentions. Routing east-west traffic back through
-the gateway adds a round-trip, creates a choke point, breaks Consul's
-observability model (east-west metrics disappear into gateway metrics), and
-bypasses the intention enforcement that sidecars provide.
+**What it looks like:**
+
+```yaml
+# reporting calls backend by routing out through the gateway and back in
+# BACKEND_URL set to the external gateway address instead of a mesh upstream
+env:
+  - name: BACKEND_URL
+    value: "https://api.example.internal/internal/backend"  # exits mesh → gateway → re-enters
+```
+
+**What breaks:** The request leaves the mesh, traverses the gateway's TLS
+termination and L7 policy stack, and re-enters — adding latency, consuming
+gateway connection budget, and routing the call through north-south policy
+(rate limits, timeouts) designed for external traffic. Consul's east-west
+observability (sidecar metrics, intention audit) is bypassed entirely.
+
+**Correct pattern:** East-west calls stay in the mesh via Envoy upstream
+proxies declared in the pod annotation. Intentions govern access; sidecars
+handle mTLS.
+
+```yaml
+# Pod annotation — declare the upstream so Consul injects the local proxy port
+annotations:
+  consul.hashicorp.com/connect-service-upstreams: "backend:8081"
+
+# Application calls the local upstream proxy, not the gateway
+env:
+  - name: BACKEND_URL
+    value: "http://127.0.0.1:8081"   # Envoy sidecar handles mTLS to backend
+```
+
+The corresponding `ServiceIntentions` entry for `reporting → backend` governs
+whether this call is permitted — independently of what the gateway allows.
+
+Reference: [`consul/config-entries/service-defaults-backend.yaml`](../consul/config-entries/service-defaults-backend.yaml)
+| [Consul connect-service-upstreams annotation](https://developer.hashicorp.com/consul/docs/k8s/annotations-and-labels)
 
 ---
 
 ### 7 — Mixing compliance scopes without a deliberate decision
 
-A compliance-scoped app grouped with non-regulated apps behind shared gateway
-infrastructure can expand audit scope to its neighbors. This is not a
-theoretical risk — auditors assess the scope of shared infrastructure, not
-just the application itself. The decision to mix scopes must be explicit and
-documented; discovering it during an audit is not acceptable.
+**What it looks like:**
+
+```yaml
+# Namespace contains both a PCI-scoped payment service and an unregulated
+# internal reporting tool, behind the same Gateway with a shared listener
+listeners:
+  - name: https
+    port: 8443
+    tls:
+      certificateRefs:
+        - name: payment-tls-cert    # PCI-scoped
+        - name: reporting-tls-cert  # unregulated
+# Both apps share the same gateway process, listener config, and access logs
+```
+
+**What breaks:** Auditors assess the scope of shared infrastructure, not
+individual applications in isolation. A gateway that terminates TLS for a
+PCI-scoped app and an unregulated app simultaneously can bring the unregulated
+app — and its team, its change process, its logs — into PCI audit scope.
+
+**Correct pattern:** Compliance-scoped apps belong in a dedicated namespace
+with their own gateway. If co-location is genuinely required, document the
+scoping decision explicitly and confirm with your compliance team before
+deployment — not after an audit finding.
+
+```yaml
+# Separate namespace and gateway for PCI-scoped services
+# Namespace: payments-namespace  →  Gateway: payments-gateway
+# Namespace: internal-namespace  →  Gateway: internal-gateway
+
+# If co-location is required, document the decision:
+# compliance-scope-decision.md — records the deliberate choice to co-locate,
+# the compliance team sign-off, and the compensating controls in place.
+```
+
+Reference: [Consul Enterprise namespaces](https://developer.hashicorp.com/consul/docs/enterprise/namespaces)
+| [Namespace grouping criteria](#namespace-grouping-criteria) (this document)
 
 ---
 
 ### 8 — Under-sizing the shared gateway
 
-Sizing gateway replicas against a single app's historical baseline and then
-adding N more apps creates a single point of failure for all of them
-simultaneously. The failure mode is not gradual degradation — it is a shared
-gateway that falls over under combined peak load, taking every app in the
-namespace offline at once.
+**What it looks like:**
+
+```yaml
+# HPA copied from the old single-app deployment without adjustment
+spec:
+  minReplicas: 1      # single replica — was fine for one app, not for N
+  maxReplicas: 3      # ceiling sized against one app's historical peak
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 80   # scaling triggers at saturation, not before it
+```
+
+**What breaks:** `minReplicas: 1` means a single gateway pod serves all apps
+in the namespace — one pod failure takes everything offline simultaneously.
+`maxReplicas: 3` sized against one app's peak is insufficient when N apps run
+concurrently. A CPU target of 80% means scaling is reactive; by the time a
+new pod is ready, the existing pod is already dropping requests.
+
+**Correct pattern:** Re-baseline HPA thresholds against aggregate traffic.
+Set `minReplicas: 2` as the floor. Scale at 60% CPU utilization so new pods
+are provisioned before saturation, not during it. Size `maxReplicas` against
+the sum of all apps' peak RPS (or the largest single-app peak if peaks do not
+overlap — see [Sizing and scaling](#sizing-and-scaling)).
+
+```yaml
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: api-gateway
+  namespace: control-network-traffic
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: api-gateway
+  minReplicas: 2          # floor: never a single point of failure
+  maxReplicas: 10         # ceiling: sized against aggregate peak across all apps
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 60   # proactive: scale before saturation
+    - type: Resource
+      resource:
+        name: memory
+        target:
+          type: Utilization
+          averageUtilization: 70   # memory grows with xDS config as apps are added
+```
+
+Also set explicit resource requests and limits on the gateway pod to give the
+scheduler accurate placement data and prevent the gateway from being evicted
+under node memory pressure:
+
+```yaml
+# In the gateway Deployment podSpec
+resources:
+  requests:
+    cpu: "500m"       # baseline per replica — adjust from observed p50 usage
+    memory: "256Mi"   # baseline; add ~50Mi per additional app in the namespace
+  limits:
+    cpu: "2000m"
+    memory: "1Gi"
+```
+
+Monitor `envoy_server_memory_allocated` on the gateway pod and
+`consul.runtime.sys_bytes` on Consul servers as apps are added to the
+namespace. Both will grow with each new app's xDS config contribution.
+
+Reference: [Kubernetes HPA documentation](https://kubernetes.io/docs/tasks/run-application/horizontal-pod-autoscale/)
+| [Sizing and scaling](#sizing-and-scaling) (this document)
 
 ---
 
 ### 9 — No clear config ownership
 
-When multiple teams write config into the same namespace without CODEOWNERS,
-naming conventions, and GitOps boundaries, the following failure modes occur:
+**What it looks like:**
 
-- A team modifies an `HTTPRoute` they do not own, changing timeout policy for
-  another app silently
-- A `ServiceIntentions` change intended for one app accidentally opens a path
-  to another
-- An incident requires tracing which team last changed a config entry, and
-  git history is the only record — but the commit message just says "update"
+```yaml
+# HTTPRoute with no owner signal — any team can modify it
+apiVersion: gateway.networking.k8s.io/v1beta1
+kind: HTTPRoute
+metadata:
+  name: route-1          # opaque name; no team attribution
+  namespace: control-network-traffic
+  # No labels, no annotations, no CODEOWNERS entry
+```
 
-Establish ownership conventions before the second team touches the namespace.
+**What breaks:** Without explicit ownership, any team can modify any route.
+A timeout change intended for the reporting route accidentally modifies the
+transactional route. A `ServiceIntentions` update opens a path the owning
+team didn't intend. During an incident, `git log` shows "update config" with
+no way to determine which team made a change or why.
+
+**Correct pattern:** Name routes after the app they serve. Use `CODEOWNERS`
+to enforce PR review by the owning team. Apply labels for programmatic
+ownership queries.
+
+```yaml
+apiVersion: gateway.networking.k8s.io/v1beta1
+kind: HTTPRoute
+metadata:
+  name: reporting-route          # name identifies the owning app unambiguously
+  namespace: control-network-traffic
+  labels:
+    app.kubernetes.io/name: reporting
+    app.kubernetes.io/managed-by: reporting-team
+  annotations:
+    consul.example.internal/owner: "reporting-team"
+    consul.example.internal/oncall: "reporting-oncall"
+```
+
+```
+# .github/CODEOWNERS
+# Gateway and shared infra — platform team approval required
+consul/config-entries/api-gateway.yaml             @platform-team
+demos/*/intentions.yaml                            @platform-team
+
+# Per-app routes — approval by the owning app team
+**/reporting-route.yaml                            @reporting-team
+**/api-route.yaml                                  @api-team
+```
+
+Reference: [GitHub CODEOWNERS syntax](https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/about-code-owners)
+| [Config ownership](#config-ownership) (this document)
 
 ---
 
 ### 10 — Route sprawl as a false isolation mechanism
 
-Creating one listener or port per app to simulate the old 1:1 isolation model
-defeats the operational purpose of consolidation and introduces new risks: more
-listeners means more TLS contexts to manage, more ports to secure at the
-network layer, and more config surface for misconfiguration. Use explicit
-intentions and per-route policy to achieve isolation. The gateway's listener
-count should reflect protocol diversity, not app count.
+**What it looks like:**
+
+```yaml
+# One listener per app to simulate old 1:1 isolation
+listeners:
+  - name: app-a-listener
+    port: 8443
+    tls:
+      certificateRefs: [{name: app-a-cert}]
+  - name: app-b-listener
+    port: 8444
+    tls:
+      certificateRefs: [{name: app-b-cert}]
+  - name: app-c-listener
+    port: 8445
+    tls:
+      certificateRefs: [{name: app-c-cert}]
+  # ... one more per app added to the namespace
+```
+
+**What breaks:** Each additional listener adds a TLS context, a port to
+secure at the network layer, and a separate access log stream to monitor.
+The isolation this provides is superficial — all listeners still run in the
+same gateway process and share the same Envoy worker threads. Actual isolation
+comes from intentions and per-route policy, not from port separation.
+
+**Correct pattern:** One HTTPS listener on one port. Use hostname-based
+`HTTPRoute` separation for routing isolation, `ServiceIntentions` for trust
+isolation, and per-route filters for policy isolation. Add additional listeners
+only when protocol diversity requires it (e.g., a separate TCP listener for
+a non-HTTP legacy service).
+
+```yaml
+# One HTTPS listener serves all apps via SNI hostname routing
+listeners:
+  - name: https
+    protocol: HTTPS
+    port: 8443
+    tls:
+      mode: Terminate
+      certificateRefs:
+        - name: app-a-cert    # SNI routes to the correct cert automatically
+        - name: app-b-cert
+        - name: app-c-cert
+# Apps are isolated by HTTPRoute hostname, intentions, and per-route policy —
+# not by port. The listener count reflects protocol diversity, not app count.
+```
+
+Reference: [`consul/config-entries/api-gateway.yaml`](../consul/config-entries/api-gateway.yaml)
+| [Consul Gateway listener configuration](https://developer.hashicorp.com/consul/docs/north-south/api-gateway)
 
 ---
 
 ### 11 — Retrying non-idempotent operations
 
-Retrying a failed POST, PATCH, or DELETE is not a resilience improvement — it
-is a reliability hazard. A payment that fails with a 500 and is retried twice
-may produce one, two, or three side effects depending on where in the request
-lifecycle the failure occurred. At the gateway layer, there is no visibility
-into whether the upstream processed the request before failing. If retries are
-configured globally or without explicit idempotency consideration per route,
-this failure mode is guaranteed to occur eventually.
+**What it looks like:**
+
+```yaml
+# HTTPRoute with a retry filter applied — no idempotency check
+apiVersion: consul.hashicorp.com/v1alpha1
+kind: RouteRetryFilter
+metadata:
+  name: payment-retry
+spec:
+  numRetries: 3
+  retryOn:
+    - "5xx"
+    - "reset"
+# Attached to the payments HTTPRoute — which accepts POST /payments
+```
+
+**What breaks:** A `POST /payments` that returns 500 after the upstream has
+already initiated the transaction gets retried up to 3 times. Each retry may
+produce an additional transaction. The failure mode is not an error visible
+in logs — it is a silent duplicate that surfaces later during reconciliation.
+At the gateway layer there is no visibility into whether the upstream
+processed the request before the 500 was returned.
+
+**Correct pattern:** Retries are opt-in per route, scoped only to routes
+where every operation is idempotent. Non-idempotent routes must have retries
+explicitly absent or explicitly disabled. Document the classification.
+
+```yaml
+# Reporting route — retries safe, all operations are GET
+apiVersion: consul.hashicorp.com/v1alpha1
+kind: RouteRetryFilter
+metadata:
+  name: reporting-retry
+spec:
+  numRetries: 2
+  retryOn: ["5xx", "reset", "connect-failure"]
+# Only attached to reporting-route HTTPRoute — not to payment-route
+
+---
+# Payment route — no RouteRetryFilter attached
+# Absence is intentional: POST /payments is non-idempotent.
+# If a retry filter is ever proposed for this route, it requires
+# explicit sign-off confirming idempotency guarantees are in place upstream.
+```
+
+Reference: [Consul API Gateway — RouteRetryFilter](https://developer.hashicorp.com/consul/docs/north-south/api-gateway)
+| [Per-route resilience — Retry policy](#per-route-resilience) (this document)
