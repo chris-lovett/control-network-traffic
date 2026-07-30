@@ -131,18 +131,7 @@ Hostname separation means:
 - A cert rotation event for one app is fully isolated from the other
 - RBAC on `HTTPRoute` objects maps cleanly to the team that owns the app
 
-**❌ Do not do this — shared hostname with path-based fan-out:**
-
-```yaml
-# ❌ DO NOT USE — path-based fan-out on a shared hostname
-# Route ownership is ambiguous. Cert lifecycle is coupled.
-# Auditors cannot assess one app's policy without reading the other's.
-spec:
-  hostnames: ["*.example.internal"]
-  rules:
-    - matches: [{path: {value: /frontend}}]
-    - matches: [{path: {value: /reporting}}]
-```
+> For the failure modes that arise from path-based fan-out and catch-all routes, see [AP2 — Single catch-all route](#2--single-catch-all-route-serving-multiple-apps).
 
 ### Keep path matches narrow and explicit
 
@@ -151,8 +140,6 @@ the match is ambiguous, Envoy's route evaluation order determines which app
 receives the request — a property invisible at the Gateway API level and easy
 to break with a config change.
 
-**Correct — narrow path prefix scoped to the owning service:**
-
 ```yaml
 # File: consul/config-entries/api-gateway.yaml
 rules:
@@ -160,19 +147,6 @@ rules:
       - path:
           type: PathPrefix
           value: /api/v1     # explicit; owned by the api team
-```
-
-**❌ Do not do this — catch-all that delegates routing downstream:**
-
-```yaml
-# ❌ DO NOT USE — gateway-level routing is bypassed entirely
-# Per-route policy (timeouts, rate limits) cannot be applied.
-# route_name in access logs is meaningless for attribution.
-rules:
-  - matches:
-      - path:
-          type: PathPrefix
-          value: /           # all traffic lands here regardless of destination
 ```
 
 ### Assign distinct listeners to distinct protocols
@@ -227,8 +201,6 @@ is genuinely required.
 Each app's cert lifecycle (issuance, rotation, revocation) must be independent
 even though the apps share a gateway process.
 
-**Correct — one `certificateRef` per hostname in `consul/config-entries/api-gateway.yaml`:**
-
 ```yaml
 # File: consul/config-entries/api-gateway.yaml — Gateway spec listeners[].tls field
 spec:
@@ -245,19 +217,11 @@ spec:
           # see the VaultPKISecret resource in the TLS section below.
 ```
 
-**❌ Do not do this — single wildcard cert shared across all apps:**
-
-```yaml
-# ❌ DO NOT USE — one expiry or compromise event forces simultaneous
-# rotation across every app on this gateway.
-        tls:
-          certificateRefs:
-            - name: shared-wildcard-cert
-```
-
 If an app handles sensitive transactions, its certificate compromise must not
 require a maintenance window for an unrelated reporting service on the same
 gateway. Coupled cert lifecycles make that separation impossible.
+
+> For the failure modes that arise from shared certificates, see [AP3 — Shared TLS certificate](#3--shared-tls-certificate-across-unrelated-apps).
 
 ### Enforce minimum TLS version and cipher policy
 
@@ -374,16 +338,7 @@ intention graph, a comment should state that this is deliberate. See the
 full working example:
 [`demos/06-multi-app-gateway/intentions.yaml`](../demos/06-multi-app-gateway/intentions.yaml).
 
-**❌ Do not do this — wildcard intentions applied "just for the migration":**
-
-```hcl
-# ❌ DO NOT USE — applied once, never cleaned up
-# Every service in the namespace can reach every other service.
-# A compromised app has unrestricted lateral movement.
-Kind   = "service-intentions"
-Name   = "*"
-Sources = [{ Name = "*", Action = "allow" }]
-```
+> For the failure modes that arise from wildcard intentions, see [AP1 — Wildcard intentions](#1--wildcard-intentions-just-for-the-migration).
 
 ---
 
@@ -447,19 +402,7 @@ spec:
 The classification of each route as idempotent or non-idempotent must be
 documented in a comment in the config file. Do not rely on tribal knowledge.
 
-**❌ Do not do this — blanket retry policy via `ServiceDefaults` wildcard:**
-
-```hcl
-# ❌ DO NOT USE — wildcard applies to every upstream including payment services
-# Silent duplicate transactions are the failure mode, not a visible error.
-Kind = "service-defaults"
-Name = "*"
-UpstreamConfig {
-  Defaults {
-    Limits { MaxRetries = 3 }
-  }
-}
-```
+> For the failure modes that arise from gateway-wide retry policy, see [AP4 — Blanket timeout/retry policy](#4--blanket-timeoutretry-policy-applied-gateway-wide).
 
 ### Circuit breaking — per upstream, not per gateway
 
@@ -604,22 +547,7 @@ corresponding `HTTPRoute` rule. See
 for the full working example including the `kubectl patch` commands to attach
 filters to existing routes.
 
-**Do not do this — aggregate gateway-level limit shared across all routes:**
-
-```yaml
-# ❌ DO NOT USE — one budget shared across all routes
-# If reporting fires 450 req/min against a 500 req/min gateway limit,
-# only 50 req/min remains for all transactional routes.
-# The transactional app receives 429s. The reporting job does not.
-apiVersion: consul.hashicorp.com/v1alpha1
-kind: RouteRetryFilter
-metadata:
-  name: gateway-ratelimit   # attached to Gateway, not to individual HTTPRoutes
-spec:
-  rateLimit:
-    requestsPerUnit: 500
-    unit: MINUTE
-```
+> For the failure modes that arise from aggregate gateway-level limits, see [AP5 — Aggregate-only rate limiting](#5--aggregate-only-rate-limiting).
 
 Additional rate limiting considerations:
 
