@@ -2,24 +2,29 @@
 
 A demo repository for **Consul Enterprise traffic control patterns** on OpenShift.
 It provides a simple three-tier Go microservices application and step-by-step demo
-guides for blue/green deployments, canary releases, circuit breaking, and chaos
-engineering.
+guides for blue/green deployments, canary releases, circuit breaking, chaos
+engineering, and API Gateway ingress patterns.
 
 ---
 
 ## Architecture
 
 ```
-  external        ┌──────────┐      ┌─────┐      ┌──────────────┐
-  traffic  ──────▶│ frontend │─────▶│ api │─────▶│  backend v1  │
-                  └──────────┘      └─────┘      └──────────────┘
-                                                  ┌──────────────┐
-                                                  │  backend v2  │ ← optional
-                                                  └──────────────┘
+                         ┌─────────────────────────────────┐
+  external               │       Consul API Gateway         │
+  traffic  ─────────────▶│  Listener: HTTPS :8443           │
+                         │  HTTPRoute: api.demo.local ───────┼──▶ ┌──────────┐      ┌─────┐      ┌──────────────┐
+                         │  HTTPRoute: reporting.demo.local ─┼──▶ │ frontend │─────▶│ api │─────▶│  backend v1  │
+                         └─────────────────────────────────┘      └──────────┘      └─────┘      └──────────────┘
+                                                                   ┌──────────┐                   ┌──────────────┐
+                                                                   │reporting │                   │  backend v2  │ ← optional
+                                                                   └──────────┘                   └──────────────┘
 ```
 
 Each pod runs an Envoy sidecar injected by Consul connect-inject.
-All inter-service calls are mTLS-secured and observable.
+All inter-service calls are mTLS-secured via the mesh. The API Gateway
+handles north-south TLS termination; service-to-service trust is governed
+by explicit `ServiceIntentions` — not namespace co-location.
 
 Full architecture details: [`docs/architecture.md`](docs/architecture.md)
 
@@ -30,16 +35,24 @@ Full architecture details: [`docs/architecture.md`](docs/architecture.md)
 ```
 .
 ├── charts/
-│   └── control-network-traffic/   # Helm chart (all three services)
+│   └── control-network-traffic/   # Helm chart (all three services + reporting stub)
 ├── consul/
-│   └── config-entries/            # ServiceResolver, Splitter, Router, Defaults
+│   └── config-entries/            # ServiceResolver, Splitter, Router, Defaults,
+│                                  # api-gateway (GatewayClass + Gateway + HTTPRoutes)
 ├── demos/
 │   ├── 01-blue-green/             # Blue/green walkthrough
 │   ├── 02-canary/                 # Canary walkthrough
 │   ├── 03-circuit-breaking/       # Circuit breaker walkthrough
-│   └── 04-chaos/                  # Chaos engineering walkthrough
+│   ├── 04-chaos/                  # Chaos engineering walkthrough
+│   ├── 05-api-gateway-ingress/    # API Gateway: north-south ingress, TLS, timeout ladder
+│   └── 06-multi-app-gateway/      # Multi-app namespace: intentions, rate limiting, isolation
+│       ├── reporting-deployment.yaml
+│       ├── reporting-service.yaml
+│       ├── intentions.yaml        # Explicit ServiceIntentions per service pair
+│       └── rate-limit-filters.yaml # Per-route rate limits (noisy-neighbor prevention)
 ├── docs/
-│   └── architecture.md
+│   ├── architecture.md
+│   └── api-gateway-guidance.md   # Tuning reference + anti-patterns for shared gateways
 ├── scripts/
 │   ├── deploy-baseline.sh
 │   ├── check-health.sh
@@ -54,12 +67,14 @@ Full architecture details: [`docs/architecture.md`](docs/architecture.md)
 
 ## Prerequisites
 
-| Tool | Version |
-|------|---------|
-| OpenShift | 4.12+ |
-| Helm | 3.10+ |
-| Consul Enterprise | 1.16+ (with connect inject enabled) |
-| Go (optional, for local dev) | 1.22+ |
+| Tool | Version | Required for |
+|------|---------|-------------|
+| OpenShift | 4.12+ | All demos |
+| Helm | 3.10+ | All demos |
+| Consul Enterprise | 1.16+ (with connect inject enabled) | All demos |
+| Consul Enterprise | 1.16+ (with API Gateway controller enabled) | Demos 05, 06 |
+| Kubernetes Gateway API CRDs | Installed by Consul API Gateway controller | Demos 05, 06 |
+| Go (optional, for local dev) | 1.22+ | Local builds only |
 
 ---
 
