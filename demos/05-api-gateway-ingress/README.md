@@ -43,6 +43,10 @@ Gateway API), managed by Consul Enterprise's API Gateway controller.
 - Consul Enterprise 1.16+ with the API Gateway controller enabled
 - Kubernetes Gateway API CRDs installed (Consul installs these automatically
   when the API Gateway component is enabled)
+- Vault with a PKI secrets engine enabled and a role that can issue certs for
+  your gateway hostname
+- Vault Secrets Operator deployed into the cluster (see
+  [Vault Secrets Operator on OpenShift](https://developer.hashicorp.com/vault/docs/platform/k8s/vso/openshift))
 - `kubectl` or `oc` access to the cluster
 - Two port-forwards open in dedicated terminals (see below)
 
@@ -61,32 +65,72 @@ Gateway API), managed by Consul Enterprise's API Gateway controller.
 
 ---
 
-## Step 1 — Create TLS certificates for the gateway listener
+## Step 1 — Provision the gateway TLS certificate from Vault
 
-The gateway terminates TLS at the listener. Each app hostname gets its own
-certificate — independent rotation and revocation lifecycles even on a shared
-gateway process.
+> **Important distinction:** Vault configured as the Consul service mesh CA
+> (via `connect.ca_provider = "vault"`) issues **leaf certificates for sidecar
+> mTLS** — that is separate from the **gateway listener TLS certificate**, which
+> is a standard Kubernetes `tls` Secret that the gateway reads directly. This
+> step provisions the listener cert; the mesh CA handles everything downstream.
+>
+> Reference: [Consul API Gateway configuration](https://developer.hashicorp.com/consul/docs/north-south/api-gateway)
+> | [Vault Secrets Operator on OpenShift](https://developer.hashicorp.com/vault/docs/platform/k8s/vso/openshift)
 
-For this demo, generate self-signed certs. In production, use Vault PKI or
-cert-manager.
+The Vault Secrets Operator (VSO) is the recommended path on OpenShift. It
+watches a `VaultPKISecret` resource and keeps the resulting Kubernetes `tls`
+Secret current — including automatic rotation — without any manual `vault`
+CLI steps or external tooling.
+
+### 1a — Create a VaultPKISecret for the frontend hostname
+
+```yaml
+# frontend-vault-pki-secret.yaml
+apiVersion: secrets.hashicorp.com/v1beta1
+kind: VaultPKISecret
+metadata:
+  name: frontend-tls-cert
+  namespace: control-network-traffic
+spec:
+  # Mount path of your Vault PKI secrets engine
+  mount: pki
+  # Vault role authorised to issue certs for your gateway hostname
+  role: <your-pki-role>
+  commonName: api.demo.local
+  altNames:
+    - api.demo.local
+  # VSO writes the issued cert and key into this Secret.
+  # The name must match certificateRefs in api-gateway.yaml.
+  destination:
+    name: frontend-tls-cert
+    create: true
+    type: kubernetes.io/tls
+  # Renew when 2/3 of the TTL has elapsed
+  expiryOffset: 30d
+  ttl: 90d
+```
 
 ```bash
-# Certificate for api.demo.local (frontend route)
-openssl req -x509 -newkey rsa:2048 -nodes -days 365 \
-  -keyout /tmp/frontend.key -out /tmp/frontend.crt \
-  -subj "/CN=api.demo.local"
+kubectl apply -f frontend-vault-pki-secret.yaml
 
-kubectl create secret tls frontend-tls-cert \
-  --cert=/tmp/frontend.crt \
-  --key=/tmp/frontend.key \
+# VSO issues the cert and populates the Secret automatically.
+# Wait for it to be ready:
+kubectl wait vaultpkisecret/frontend-tls-cert \
+  --for=condition=SecretSynced \
+  --timeout=60s \
   -n control-network-traffic
 ```
 
-Verify the Secret exists:
+### 1b — Verify the Secret was created
 
 ```bash
 kubectl get secret frontend-tls-cert -n control-network-traffic
+# Expected:
+#   NAME                TYPE                DATA   AGE
+#   frontend-tls-cert   kubernetes.io/tls   2      <age>
 ```
+
+The gateway hot-reloads certificates when the Secret is updated — VSO
+rotation events do not require a gateway restart or connection drain.
 
 ---
 
@@ -185,11 +229,34 @@ The gateway terminates TLS from the client. Consul's connect-inject sidecar
 on the `frontend` pod then handles mTLS for the downstream hop into the mesh —
 the gateway never sends unencrypted traffic into the cluster.
 
+Confirm the gateway is presenting the Vault-issued certificate for the correct
+hostname, and that the cert chain resolves to your Vault PKI CA:
+
 ```bash
-# Confirm the certificate presented by the gateway matches api.demo.local
+# Confirm the subject CN matches the SNI hostname
 openssl s_client -connect 127.0.0.1:18443 -servername api.demo.local \
+  -showcerts </dev/null 2>/dev/null | openssl x509 -noout -subject -issuer
+# Expected:
+#   subject=CN=api.demo.local
+#   issuer=CN=<your Vault PKI CA name>
+```
+
+```bash
+# Confirm the chain is trusted against your Vault CA cert
+# Retrieve the CA cert from Vault if you don't have it locally:
+vault read -field=certificate pki/cert/ca > /tmp/vault-ca.crt
+
+openssl s_client -connect 127.0.0.1:18443 -servername api.demo.local \
+  -CAfile /tmp/vault-ca.crt </dev/null 2>/dev/null | grep "Verify return code"
+# Expected: Verify return code: 0 (ok)
+```
+
+```bash
+# Confirm SNI isolation — the gateway must serve the reporting cert
+# for reporting.demo.local, not the frontend cert
+openssl s_client -connect 127.0.0.1:18443 -servername reporting.demo.local \
   -showcerts </dev/null 2>/dev/null | openssl x509 -noout -subject
-# Expected: subject=CN=api.demo.local
+# Expected: CN=reporting.demo.local  (NOT CN=api.demo.local)
 ```
 
 ---
@@ -198,7 +265,8 @@ openssl s_client -connect 127.0.0.1:18443 -servername api.demo.local \
 
 ```bash
 kubectl delete -f consul/config-entries/api-gateway.yaml
-kubectl delete secret frontend-tls-cert -n control-network-traffic
+kubectl delete -f frontend-vault-pki-secret.yaml
+# VSO will remove the managed Secret automatically when the VaultPKISecret is deleted
 ```
 
 ---
