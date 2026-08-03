@@ -52,7 +52,8 @@ Full architecture details: [`docs/architecture.md`](docs/architecture.md)
 │       └── rate-limit-filters.yaml # Per-route rate limits (noisy-neighbor prevention)
 ├── docs/
 │   ├── architecture.md
-│   └── api-gateway-guidance.md   # Tuning reference + anti-patterns for shared gateways
+│   ├── api-gateway-guidance.md          # Tuning reference + anti-patterns for shared gateways
+│   └── blue-green-troubleshooting.md    # Platform engineer troubleshooting guide for blue/green
 ├── scripts/
 │   ├── deploy-baseline.sh
 │   ├── check-health.sh
@@ -170,3 +171,4 @@ for full install/upgrade/uninstall instructions and configurable values.
 - [Consul: API Gateway](https://developer.hashicorp.com/consul/docs/api-gateway)
 - [Kubernetes Gateway API Spec](https://gateway-api.sigs.k8s.io/)
 - [API Gateway Tuning & Anti-Pattern Guidance](docs/api-gateway-guidance.md)
+- [Blue/Green Troubleshooting Guide](docs/blue-green-troubleshooting.md)
